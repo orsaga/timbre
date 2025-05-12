@@ -293,17 +293,41 @@ bool holiday() {
 }
 
 void checkSchedule() {
-  if (holiday()) {
-    delay(bell_time_duration);
-    timbreEnabled = !timbreEnabled;
-  }
-  if (weekend(rtc.getDayofWeek())) {
-    Serial.println("Es fin de semana Timbre Off");
-    delay(bell_time_duration);
-    timbreEnabled = !timbreEnabled;
-  }
-  if (!timbreEnabled) return;
+  bool isWeekendOrHoliday = false; // Variable para saber si hay que desactivar
 
+  if (holiday()) {
+    Serial.println("¡Es festivo! Timbre Off");
+    isWeekendOrHoliday = true;
+  } else if (weekend(rtc.getDayofWeek())) { // Usar 'else if' para evitar doble mensaje si es festivo en fin de semana
+    Serial.println("Es fin de semana Timbre Off");
+    isWeekendOrHoliday = true;
+  }
+
+  if (isWeekendOrHoliday) {
+    timbreEnabled = false; // Desactivar directamente
+    // No hay delay aquí
+    return; // Salir de la función, no hay necesidad de chequear horarios
+  }
+
+  // Si no es fin de semana ni festivo, asegurarse de que esté habilitado
+  // (A menos que se haya desactivado manualmente con el botón o la web)
+  // Esta línea es opcional, depende de si quieres que se reactive automáticamente al pasar el finde/festivo
+  // Si quieres que quede desactivado si se desactivó manualmente, necesitarías otra lógica/variable.
+  // Asumiendo que sí quieres que se reactive automáticamente:
+  // if (!timbreEnabled) { // Si estaba desactivado (por finde/festivo/botón)
+  //    timbreEnabled = true; // Reactivarlo para día normal (CUIDADO: esto puede sobreescribir el botón/web)
+  // }
+  // Una mejor aproximación sería sólo desactivar aquí y manejar la reactivación en otro lado o
+  // simplemente confiar en que la variable timbreEnabled sólo se modifica aquí, por el botón y por la web.
+
+  // Si el timbre está globalmente desactivado (por botón o web), no hacer nada más.
+  if (!timbreEnabled) {
+      // Serial.println("Timbre desactivado manualmente."); // Mensaje opcional
+      return;
+  }
+
+
+  // --- Lógica original para chequear horarios ---
   int currentHour = rtc.getHour(true);
   int currentMinute = rtc.getMinute();
   int currentSecond = rtc.getSecond();
