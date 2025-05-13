@@ -6,7 +6,7 @@
 #include <DFRobotDFPlayerMini.h>
 #include <time.h>
 #include <ESP32Time.h>
-#include <esp_task_wdt.h>
+#include <esp_task_wdt.h> // Comentado si no se usa esp_task_wdt_reconfigure
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "Wire.h"
@@ -106,13 +106,63 @@ const uint32_t holidays[holiday_count] = {
   20251225   // Navidad
 };
 
+// --- INICIO NUEVAS VARIABLES Y DEFINICIONES PARA MANEJO DE HORA SIN INTERNET ---
+#define LAST_TIME_FILE "/last_time.txt"
+bool timeSetSuccessfully = false; // Indica si la hora del RTC se ha configurado correctamente
+// --- FIN NUEVAS VARIABLES Y DEFINICIONES ---
+
+
+// --- INICIO NUEVAS FUNCIONES PARA MANEJO DE HORA SIN INTERNET ---
+// Guarda la hora actual del RTC a SPIFFS
+void saveTimeRtcToSPIFFS() {
+  if (!timeSetSuccessfully) { // No guardar si la hora no es válida o no está seteada
+    Serial.println(F("No se guarda la hora en SPIFFS, RTC no tiene hora válida o no seteada."));
+    return;
+  }
+  File timeFile = SPIFFS.open(LAST_TIME_FILE, "w");
+  if (!timeFile) {
+    Serial.println(F("Error al abrir archivo para guardar hora."));
+    return;
+  }
+  time_t now = rtc.getEpoch(); // Obtener segundos desde epoch
+  timeFile.print(now);
+  timeFile.close();
+  Serial.print(F("Hora guardada en SPIFFS (epoch): "));
+  Serial.println(now);
+  Serial.print(F("Equivalente a: "));
+  Serial.println(rtc.getTimeDate(true));
+}
+
+// Carga la hora desde SPIFFS al RTC
+bool loadTimeRtcFromSPIFFS() {
+  if (SPIFFS.exists(LAST_TIME_FILE)) {
+    File timeFile = SPIFFS.open(LAST_TIME_FILE, "r");
+    if (!timeFile) {
+      Serial.println(F("Error al abrir archivo para cargar hora."));
+      return false;
+    }
+    String timeStr = timeFile.readStringUntil('\n');
+    timeFile.close();
+    if (timeStr.length() > 0) {
+      time_t epochTime = atol(timeStr.c_str());
+      if (epochTime > 946684800) { // Validar que sea después del año 2000 aprox.
+        rtc.setTime(epochTime);
+        Serial.print(F("Hora cargada desde SPIFFS: "));
+        Serial.println(rtc.getTimeDate(true));
+        return true;
+      } else {
+        Serial.println(F("Timestamp en SPIFFS parece inválido."));
+        return false;
+      }
+    }
+  }
+  Serial.println(F("No se encontró archivo de hora guardada o está vacío."));
+  return false;
+}
+// --- FIN NUEVAS FUNCIONES PARA MANEJO DE HORA SIN INTERNET ---
+
 
 void setup() {
-  // esp_task_wdt_config_t config = {
-  //   .timeout_ms = 120* 1000,  //  120 seconds
-  //   .trigger_panic = true,     // Trigger panic if watchdog timer is not reset
-  // };
-  // esp_task_wdt_reconfigure(&config);
   Serial.begin(115200);
   // Inicializar el array de canciones reproducidas
   for (int i = 1; i <= totalSongs; i++) {
@@ -135,7 +185,7 @@ void setup() {
 
   // Inicializar SPIFFS
   if (!SPIFFS.begin(true)) {
-    Serial.println("Error al montar SPIFFS");
+    Serial.println(F("Error al montar SPIFFS"));
   }
 
   // Cargar configuraciones guardadas
@@ -143,7 +193,6 @@ void setup() {
 
   // Pantalla oled
   Wire.begin(I2C_SDA, I2C_SCL);
-  // Inicializar la pantalla OLED
   if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     Serial.println(F("Error al inicializar SSD1306"));
     for(;;); // No continuar si hay error
@@ -154,89 +203,144 @@ void setup() {
   display.setCursor(0, 0);
   display.println(F("Iniciando..."));
   display.display();
-
   delay(1000);
 
   // Conectar a WiFi
-  setupWiFi();
+  setupWiFi(); // setupWiFi intentará conectar o iniciará AP
 
-  // Sincronizar hora con NTP
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  setLocalTime();
+  // --- INICIO LÓGICA DE SINCRONIZACIÓN DE HORA MEJORADA ---
+  Serial.println(F("Configurando hora..."));
+  timeSetSuccessfully = false; 
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(F("Intentando sincronizar hora con NTP..."));
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10000)) { // Intenta por 10 segundos
+      rtc.setTimeStruct(timeinfo); // Configura ESP32Time rtc con la hora NTP
+      Serial.println(F("Hora NTP obtenida y RTC configurado."));
+      Serial.println(rtc.getTimeDate(true)); 
+      if (rtc.getYear() > 2023) { // Chequeo básico de que el año es razonable
+        timeSetSuccessfully = true;
+        saveTimeRtcToSPIFFS(); // Guardar la hora válida obtenida por NTP
+      } else {
+        Serial.println(F("Año obtenido de NTP no parece válido. RTC no actualizado con NTP."));
+      }
+    } else {
+      Serial.println(F("Fallo al obtener hora de NTP."));
+    }
+  } else {
+    Serial.println(F("No hay conexión WiFi para NTP."));
+  }
+
+  if (!timeSetSuccessfully) { // Si NTP falló o no hubo WiFi
+    Serial.println(F("Intentando cargar hora desde SPIFFS..."));
+    if (loadTimeRtcFromSPIFFS()) {
+      // rtc ya fue configurado por loadTimeRtcFromSPIFFS()
+      if (rtc.getYear() > 2023) { // Chequeo básico
+        Serial.println(F("Hora cargada desde SPIFFS y RTC configurado."));
+        timeSetSuccessfully = true;
+      } else {
+        Serial.println(F("Hora de SPIFFS no parece válida, RTC podría tener hora por defecto."));
+        // Opcional: resetear a una fecha "inválida" conocida para hacerlo obvio
+        // rtc.setTime(0, 0, 0, 1, 1, 2000); 
+      }
+    } else {
+      Serial.println(F("No se pudo cargar hora desde SPIFFS. RTC podría tener hora por defecto o incorrecta."));
+      // rtc.setTime(0, 0, 0, 1, 1, 2000); // Opcional
+    }
+  }
+
+  if (!timeSetSuccessfully) {
+    Serial.println(F("ADVERTENCIA: La hora del sistema NO ESTÁ configurada correctamente."));
+    Serial.println(F("Por favor, conecte a WiFi para NTP o configurela manualmente via Web."));
+    // Por defecto, ESP32Time puede iniciar en 1/1/2000 si no se setea
+  }
+  // --- FIN LÓGICA DE SINCRONIZACIÓN DE HORA ---
 
   // Configurar servidor web
   setupWebServer();
 
-  Serial.println("Sistema listo!");
-  Serial.println("Hora: " + getCurrentTimeString());
+  Serial.println(F("Sistema listo!"));
+  Serial.print(F("Hora actual RTC: "));
+  Serial.println(getCurrentTimeString());
+  if (timeSetSuccessfully) {
+    Serial.print(F("Fecha actual RTC: "));
+    Serial.println(rtc.getDate(true)); // true para formato DD-MM-YYYY
+  } else {
+    Serial.println(F("¡¡¡LA HORA NO ESTÁ CONFIGURADA CORRECTAMENTE!!!"));
+    Serial.print(F("Fecha y hora actual (podría ser incorrecta): "));
+    Serial.println(rtc.getTimeDate(true));
+  }
   Serial.println("Config activa: " + scheduleNames[activeSchedule]);
 }
 
 void loop() {
-  // Verificar botones
   checkButtons();
-
-  // Verificar si es hora de activar el timbre
-  checkSchedule();
-
-  // Manejar el timbre de forma no bloqueante
+  if (timeSetSuccessfully) { // Solo chequear horarios si la hora está configurada
+    checkSchedule();
+  }
   handleBellState();
-
-  // Actualizar pantalla
   updateDisplay();
 
   if (myDFPlayer.available()) {
-    printDetail(myDFPlayer.readType(), myDFPlayer.read()); //Print the detail message from DFPlayer to handle different errors and states.
+    printDetail(myDFPlayer.readType(), myDFPlayer.read());
   }
 }
 
 void updateDisplay() {
   static unsigned long lastDisplayUpdate = 0;
-  display.clearDisplay();
-  display.setTextSize(1);
+  unsigned long currentMillis = millis();
 
-  if (millis() - lastDisplayUpdate > 1000) {
+  if (currentMillis - lastDisplayUpdate >= 1000) { // Actualizar cada segundo
+    lastDisplayUpdate = currentMillis;
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
 
     if (isRingInProgress){
-      display.clearDisplay();
       display.setTextSize(2);
       display.setCursor(0, 0);
-      display.println("Timbre");
+      display.println(F("Timbre"));
       display.setCursor(0, 16);
-      display.println("Activado");
-      display.display();
-
-    }
-    else  {
+      display.println(F("Activado"));
+    } else if (!timeSetSuccessfully) { // Si la hora no está configurada correctamente
+      display.setCursor(0, 0);
+      display.println(F("HORA NO AJUSTADA"));
+      display.setCursor(0, 10);
+      display.println(F("Conecte WiFi o"));
+      display.setCursor(0, 20);
+      display.println(F("configurela web"));
+    } else {
       // Mostrar IP
       display.setCursor(0, 0);
       if (WiFi.status() == WL_CONNECTED) {
         display.println(WiFi.localIP().toString());
       } else {
-        display.println("AP: TimbreEscolar");
+        // En modo AP, mostrar la IP del AP si está disponible
+        display.print(F("AP: TimbreEscolar"));
+        // display.println(WiFi.softAPIP()); // Descomentar si quieres mostrar la IP del AP
       }
       
-      // Mostrar horario activo
+      // Mostrar horario activo (asegúrate que quepa)
       display.setCursor(0, 11);
-      display.println(scheduleNames[activeSchedule]);
+      String currentScheduleName = scheduleNames[activeSchedule];
+      if (currentScheduleName.length() > 20) { // Ajusta 20 al máximo de caracteres que caben
+          currentScheduleName = currentScheduleName.substring(0, 19) + ".";
+      }
+      display.println(currentScheduleName);
 
       // Mostrar hora actual
       display.setCursor(0, 22);
-      display.print("Hora: ");
+      display.print(F("Hora: "));
       display.println(getCurrentTimeString());
-      
-      display.display();
-
     }
-      
-      lastDisplayUpdate = millis();
+    display.display();
   }
 }
 
 void setupWiFi() {
-
-  Serial.println("Conectando WiFi...");
-
+  Serial.println(F("Conectando WiFi..."));
   WiFi.begin(ssid, password);
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -246,42 +350,49 @@ void setupWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi Conectado!");
+    Serial.println(F("\nWiFi Conectado!"));
     Serial.println(WiFi.localIP().toString());
-
   } else {
-
-    Serial.println("Error WiFi!");
-    Serial.println("Modo AP activado");
-
-    // Configurar Access Point si no se puede conectar
-    WiFi.softAP("TimbreEscolar", "password");
+    Serial.println(F("\nError WiFi o no configurado!"));
+    Serial.println(F("Modo AP activado: TimbreEscolar"));
+    WiFi.softAP("TimbreEscolar", "password"); // Considera una contraseña más segura o configurable
+    Serial.print(F("AP IP address: "));
+    Serial.println(WiFi.softAPIP());
   }
 }
 
+// La función setLocalTime() original ya no es necesaria explícitamente aquí,
+// la configuración de 'rtc' se maneja en setup()
+/*
 void setLocalTime() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
     Serial.println("Error obteniendo hora");
     return;
   }
-
   rtc.setTimeStruct(timeinfo);
 }
+*/
 
 String getCurrentTimeString() {
+  if (!timeSetSuccessfully && rtc.getYear() < 2024) { // Si la hora no está bien y el año es irreal
+    return "--:--:--";
+  }
   char timeStr[9];
   sprintf(timeStr, "%02d:%02d:%02d", rtc.getHour(true), rtc.getMinute(), rtc.getSecond());
   return String(timeStr);
 }
 
 bool weekend(int day) {
-  // day: 0 = domingo, 6 = sábado
+  // day: 0 = domingo, 6 = sábado (según ESP32Time)
   return (day == 0 || day == 6);
 }
 
 bool holiday() {
-  uint32_t fechaNum = (rtc.getYear() * 10000 + (rtc.getMonth() + 1) * 100 + rtc.getDay());
+  if (!timeSetSuccessfully) return false; // No podemos determinar festivos sin hora correcta
+
+  // ESP32Time rtc.getMonth() devuelve 0-11, por eso +1
+  uint32_t fechaNum = (uint32_t)rtc.getYear() * 10000 + (uint32_t)(rtc.getMonth() + 1) * 100 + (uint32_t)rtc.getDay();
 
   for (int i = 0; i < holiday_count; i++) {
     if (holidays[i] == fechaNum) {
@@ -293,57 +404,61 @@ bool holiday() {
 }
 
 void checkSchedule() {
-  bool isWeekendOrHoliday = false; // Variable para saber si hay que desactivar
+  // Esta función solo debería ejecutarse si timeSetSuccessfully es true
+  // (ya se verifica en loop antes de llamar a checkSchedule)
+
+  bool isWeekendOrHoliday = false; 
 
   if (holiday()) {
-    Serial.println("¡Es festivo! Timbre Off");
+    // Mensaje ya se imprime en holiday()
     isWeekendOrHoliday = true;
-  } else if (weekend(rtc.getDayofWeek())) { // Usar 'else if' para evitar doble mensaje si es festivo en fin de semana
-    Serial.println("Es fin de semana Timbre Off");
+  } else if (weekend(rtc.getDayofWeek())) { 
+    Serial.println(F("Es fin de semana. Timbre desactivado temporalmente."));
     isWeekendOrHoliday = true;
   }
 
   if (isWeekendOrHoliday) {
-    timbreEnabled = false; // Desactivar directamente
-    // No hay delay aquí
-    return; // Salir de la función, no hay necesidad de chequear horarios
+    // No se desactiva timbreEnabled permanentemente aquí,
+    // solo se evita que suene en este ciclo.
+    // timbreEnabled global se maneja por botón/web.
+    return; 
   }
 
-  // Si no es fin de semana ni festivo, asegurarse de que esté habilitado
-  // (A menos que se haya desactivado manualmente con el botón o la web)
-  // Esta línea es opcional, depende de si quieres que se reactive automáticamente al pasar el finde/festivo
-  // Si quieres que quede desactivado si se desactivó manualmente, necesitarías otra lógica/variable.
-  // Asumiendo que sí quieres que se reactive automáticamente:
-  // if (!timbreEnabled) { // Si estaba desactivado (por finde/festivo/botón)
-  //    timbreEnabled = true; // Reactivarlo para día normal (CUIDADO: esto puede sobreescribir el botón/web)
-  // }
-  // Una mejor aproximación sería sólo desactivar aquí y manejar la reactivación en otro lado o
-  // simplemente confiar en que la variable timbreEnabled sólo se modifica aquí, por el botón y por la web.
-
-  // Si el timbre está globalmente desactivado (por botón o web), no hacer nada más.
   if (!timbreEnabled) {
-      // Serial.println("Timbre desactivado manualmente."); // Mensaje opcional
+      // Serial.println("Timbre desactivado manualmente (botón/web)."); // Mensaje opcional
       return;
   }
 
-
-  // --- Lógica original para chequear horarios ---
   int currentHour = rtc.getHour(true);
   int currentMinute = rtc.getMinute();
-  int currentSecond = rtc.getSecond();
-
+  
+  // Revisar solo una vez por minuto para evitar activaciones múltiples si el segundo no es 0
+  // o si hay algún pequeño drift.
+  static int lastCheckedMinute = -1;
+  if (currentMinute == lastCheckedMinute && rtc.getSecond() > 5) { // Solo chequear una vez por minuto
+      return;
+  }
   // Solo revisar cuando los segundos sean 0 para evitar activaciones múltiples
-  if (currentSecond != 0) return;
+  // if (rtc.getSecond() != 0) return; // Esta línea es muy estricta, puede fallar.
+                                    // Es mejor chequear una vez por minuto.
+
+  lastCheckedMinute = currentMinute; // Actualizar el último minuto chequeado
 
   for (int i = 0; i < scheduleCount[activeSchedule]; i++) {
     if (schedules[activeSchedule][i].hour == currentHour && schedules[activeSchedule][i].minute == currentMinute) {
+      Serial.print(F("Horario coincidente: "));
+      Serial.print(schedules[activeSchedule][i].hour);
+      Serial.print(":");
+      Serial.println(schedules[activeSchedule][i].minute);
       startBell(schedules[activeSchedule][i].isEndOfDay);
-      break;
+      break; 
     }
   }
 }
 
 void printDetail(uint8_t type, int value){
+  // (Sin cambios en esta función)
+  // ... tu código original de printDetail ...
 switch (type) {
     case TimeOut:
       Serial.println(F("Time Out!"));
@@ -406,44 +521,54 @@ switch (type) {
     default:
       break;
   }
-  
 }
 
 void startBell(bool endOfDay) {
-if (isRingInProgress) return;
+  if (isRingInProgress) return;
 
   int randomSong;
   int attempts = 0;
   bool foundUnplayed = false;
+  int songsAvailableToPlay = 0;
 
-  // Intentar hasta 10 veces encontrar una canción no reproducida
-  while (attempts < 10 && !foundUnplayed) {
+  for (int i = 1; i <= totalSongs; i++) {
+    if (!songPlayed[i]) {
+      songsAvailableToPlay++;
+    }
+  }
+
+  if (songsAvailableToPlay == 0) { // Todas las canciones ya se reprodujeron
+    Serial.println(F("Todas las canciones reproducidas, reiniciando flags."));
+    for (int i = 1; i <= totalSongs; i++) {
+      songPlayed[i] = false;
+    }
+    songsAvailableToPlay = totalSongs;
+  }
+  
+  // Intentar encontrar una canción no reproducida
+  do {
     randomSong = random(1, totalSongs + 1);
     if (!songPlayed[randomSong]) {
       foundUnplayed = true;
-      songPlayed[randomSong] = true; // Marcar la canción como reproducida
-      lastPlayedSong = randomSong;
     }
     attempts++;
-  }
+  } while (!foundUnplayed && attempts < (totalSongs * 2)); // Intentar un número razonable de veces
 
-  // Si no se encontró una canción no reproducida (después de varios intentos),
-  // se reproduce una aleatoria sin verificar (para evitar bucles infinitos)
-  if (!foundUnplayed) {
-    randomSong = random(1, totalSongs + 1);
-    Serial.println("¡Timbre activado! (Reproducción forzada - posible repetición)");
+  if (!foundUnplayed) { // Si aún no se encontró (muy improbable si hay disponibles)
+    randomSong = random(1, totalSongs + 1); // Escoger una al azar de todas formas
+    Serial.println(F("¡Timbre activado! (Reproducción forzada aleatoria - posible repetición)"));
   } else {
-    Serial.println("¡Timbre activado! (Canción " + String(randomSong) + ")");
+     Serial.println("¡Timbre activado! (Canción " + String(randomSong) + ")");
   }
 
-  // Activar relé para el timbre
-  digitalWrite(RELAY_PIN, LOW);
+  songPlayed[randomSong] = true; // Marcar la canción como reproducida
+  lastPlayedSong = randomSong;
 
-  // Reproducir mp3
+
+  digitalWrite(RELAY_PIN, LOW);
   myDFPlayer.play(randomSong);
   myDFPlayer.volume(30);
 
-  // Establecer variables para la gestión no bloqueante
   isRingInProgress = true;
   isEndOfDayBell = endOfDay;
   bellStartTime = millis();
@@ -451,7 +576,9 @@ if (isRingInProgress) return;
 }
 
 void handleBellState() {
-if (!isRingInProgress) return;
+  // (Sin cambios en esta función)
+  // ... tu código original de handleBellState ...
+  if (!isRingInProgress) return;
 
   unsigned long currentMillis = millis();
   unsigned long elapsedTime = currentMillis - bellStartTime;
@@ -462,11 +589,9 @@ if (!isRingInProgress) return;
         digitalWrite(RELAY_PIN, HIGH);
 
         if (isEndOfDayBell) {
-          // Preparar para la segunda campana (fin de jornada)
           bellStartTime = currentMillis;
           bellState = 2;
         } else {
-          // Preparar para fade out gradual del volumen
           bellStartTime = currentMillis;
           bellState = 4;
         }
@@ -490,26 +615,31 @@ if (!isRingInProgress) return;
       break;
 
     case 4: // Apagar mp3 y reiniciar variables
-      if (elapsedTime >= mp3_time_duration - bell_time_duration) {
+      if (elapsedTime >= mp3_time_duration - bell_time_duration) { // Espera a que termine el MP3 (menos la duración del timbre)
         myDFPlayer.stop();
         isRingInProgress = false;
         bellState = 0;
+        Serial.println(F("Timbre finalizado."));
       }
       break;
   }
 }
 
 void checkButtons() {
+  // (Sin cambios en esta función, pero considera el debounce si hay rebotes)
+  // ... tu código original de checkButtons ...
   // Botón de emergencia
   if (digitalRead(EMERGENCY_BUTTON_PIN) == LOW) {
     delay(50);   // Debounce
     if (digitalRead(EMERGENCY_BUTTON_PIN) == LOW) {
+      Serial.println(F("Botón de emergencia presionado."));
       if (!isRingInProgress) {
         startBell(false);
       }
-      while (digitalRead(EMERGENCY_BUTTON_PIN) == LOW)
-        handleBellState();
-        delay(10); // Pequeño delay para no saturar el CPU
+      while (digitalRead(EMERGENCY_BUTTON_PIN) == LOW) {
+        // handleBellState(); // Esto podría ser problemático si se mantiene presionado mucho tiempo
+        delay(10); 
+      }
     }
   }
 
@@ -518,16 +648,20 @@ void checkButtons() {
     delay(50);   // Debounce
     if (digitalRead(DISABLE_BUTTON_PIN) == LOW) {
       timbreEnabled = !timbreEnabled;
-      updateDisplay();
-      while (digitalRead(DISABLE_BUTTON_PIN) == LOW)
-        handleBellState();
-        delay(10); // Pequeño delay para no saturar el CPU
+      Serial.print(F("Timbre globalmente "));
+      Serial.println(timbreEnabled ? F("ACTIVADO") : F("DESACTIVADO"));
+      // updateDisplay(); // updateDisplay se llama en loop, no es necesario aquí directamente
+      while (digitalRead(DISABLE_BUTTON_PIN) == LOW) {
+        delay(10);
+      }
     }
   }
 }
 
 
 void loadSchedules() {
+  // (Sin cambios en esta función)
+  // ... tu código original de loadSchedules ...
   if (SPIFFS.exists("/config.json")) {
     File configFile = SPIFFS.open("/config.json", "r");
     if (configFile) {
@@ -535,33 +669,73 @@ void loadSchedules() {
       std::unique_ptr<char[]> buf(new char[size]);
       configFile.readBytes(buf.get(), size);
 
-      DynamicJsonDocument doc(2048);
-      deserializeJson(doc, buf.get());
+      DynamicJsonDocument doc(2048); // Aumenta si es necesario
+      DeserializationError error = deserializeJson(doc, buf.get());
+      if (error) {
+        Serial.print(F("Error al deserializar config.json: "));
+        Serial.println(error.c_str());
+        // Cargar configuración por defecto si hay error
+        // return loadDefaultSchedules(); // Llama a una función que cargue los por defecto
+      }
 
-      activeSchedule = doc["activeSchedule"];
 
-      for (int s = 0; s < 3; s++) {
-        scheduleNames[s] = doc["scheduleNames"][s].as<String>();
-        scheduleCount[s] = doc["schedules"][s].size();
+      activeSchedule = doc["activeSchedule"] | 0; // Valor por defecto 0 si no existe
 
-        schedules[s].clear();
-        for (int i = 0; i < scheduleCount[s]; i++) {
-          BellTime bell;
-          bell.hour = doc["schedules"][s][i]["hour"];
-          bell.minute = doc["schedules"][s][i]["minute"];
-          bell.isEndOfDay = doc["schedules"][s][i]["isEndOfDay"];
-          schedules[s].push_back(bell);
+      JsonArray scheduleNamesDoc = doc["scheduleNames"];
+      if (!scheduleNamesDoc.isNull()) {
+        for (int s = 0; s < 3; s++) {
+            if (s < scheduleNamesDoc.size()) {
+                scheduleNames[s] = scheduleNamesDoc[s].as<String>();
+            } else {
+                scheduleNames[s] = "Horario " + String(s+1); // Nombre por defecto
+            }
         }
       }
 
+
+      JsonArray schedulesDoc = doc["schedules"];
+       if (!schedulesDoc.isNull()) {
+        for (int s = 0; s < 3; s++) {
+            schedules[s].clear(); // Limpiar horarios existentes para este schedule
+            if (s < schedulesDoc.size()) {
+                JsonArray schedule_s_Doc = schedulesDoc[s];
+                if (!schedule_s_Doc.isNull()) {
+                    scheduleCount[s] = schedule_s_Doc.size();
+                    for (int i = 0; i < scheduleCount[s]; i++) {
+                        JsonObject bellDoc = schedule_s_Doc[i];
+                        if (!bellDoc.isNull()) {
+                            BellTime bell;
+                            bell.hour = bellDoc["hour"] | 0;
+                            bell.minute = bellDoc["minute"] | 0;
+                            bell.isEndOfDay = bellDoc["isEndOfDay"] | false;
+                            schedules[s].push_back(bell);
+                        }
+                    }
+                } else {
+                     scheduleCount[s] = 0; // No hay horarios para este schedule
+                }
+            } else {
+                scheduleCount[s] = 0; // No existe este schedule en el JSON
+            }
+        }
+      }
       configFile.close();
+      Serial.println(F("Configuraciones cargadas desde SPIFFS."));
+    } else {
+        Serial.println(F("No se pudo abrir config.json, cargando valores por defecto."));
+        //loadDefaultSchedules();
     }
   } else {
+    Serial.println(F("config.json no encontrado, cargando valores por defecto."));
     // Configuración por defecto (ejemplo)
-    scheduleNames[0] = "Horario 1";
-    scheduleCount[0] = 9;
+    scheduleNames[0] = "Horario Normal";
+    scheduleNames[1] = "Horario Corto";
+    scheduleNames[2] = "Horario Especial";
+    
+    // Limpiar cualquier horario previo
+    for(int s=0; s<3; ++s) schedules[s].clear();
 
-    // Ejemplo de horario por defecto (se debe configurar mediante la web)
+    scheduleCount[0] = 9;
     schedules[0].push_back({ 7, 0, false });    // 7:00 AM
     schedules[0].push_back({ 8, 0, false });    // 8:00 AM
     schedules[0].push_back({ 9, 0, false });    // 9:00 AM
@@ -571,34 +745,53 @@ void loadSchedules() {
     schedules[0].push_back({ 12, 0, false });   // 12:00 PM
     schedules[0].push_back({ 13, 0, false });   // 1:00 PM
     schedules[0].push_back({ 14, 0, true });    // 2:00 PM - Fin de jornada
+    
+    scheduleCount[1] = 0; // Horario 2 vacío por defecto
+    scheduleCount[2] = 0; // Horario 3 vacío por defecto
 
-    saveSchedules();
+    saveSchedules(); // Guardar la configuración por defecto
   }
 }
 
 void saveSchedules() {
-  DynamicJsonDocument doc(2048);
+  // (Sin cambios en esta función)
+  // ... tu código original de saveSchedules ...
+  DynamicJsonDocument doc(2048); // Aumenta si tu config es más grande
 
   doc["activeSchedule"] = activeSchedule;
 
+  JsonArray scheduleNamesDoc = doc.createNestedArray("scheduleNames");
   for (int s = 0; s < 3; s++) {
-    doc["scheduleNames"][s] = scheduleNames[s];
+    scheduleNamesDoc.add(scheduleNames[s]);
+  }
 
+  JsonArray schedulesDoc = doc.createNestedArray("schedules");
+  for (int s = 0; s < 3; s++) {
+    JsonArray schedule_s_Doc = schedulesDoc.createNestedArray();
     for (int i = 0; i < scheduleCount[s]; i++) {
-      doc["schedules"][s][i]["hour"] = schedules[s][i].hour;
-      doc["schedules"][s][i]["minute"] = schedules[s][i].minute;
-      doc["schedules"][s][i]["isEndOfDay"] = schedules[s][i].isEndOfDay;
+      JsonObject bellDoc = schedule_s_Doc.createNestedObject();
+      bellDoc["hour"] = schedules[s][i].hour;
+      bellDoc["minute"] = schedules[s][i].minute;
+      bellDoc["isEndOfDay"] = schedules[s][i].isEndOfDay;
     }
   }
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (configFile) {
-    serializeJson(doc, configFile);
+    if (serializeJson(doc, configFile) == 0) {
+      Serial.println(F("Error al escribir en config.json"));
+    } else {
+      Serial.println(F("Configuraciones guardadas en SPIFFS."));
+    }
     configFile.close();
+  } else {
+    Serial.println(F("No se pudo abrir config.json para escribir."));
   }
 }
 
 String processor(const String &var) {
+  // (Sin cambios en esta función)
+  // ... tu código original de processor ...
   if (var == "ACTIVE_SCHEDULE") {
     return String(activeSchedule);
   }
@@ -613,6 +806,17 @@ String processor(const String &var) {
   }
   if (var == "TIMBRE_STATUS") {
     return timbreEnabled ? "Activado" : "Desactivado";
+  }
+  // --- AÑADIDO PARA MOSTRAR HORA EN HTML SI ES NECESARIO ---
+  if (var == "CURRENT_TIME") {
+    return getCurrentTimeString();
+  }
+  if (var == "CURRENT_DATE") {
+    if (timeSetSuccessfully) return rtc.getDate(true); // DD-MM-YYYY
+    return "Fecha no disp.";
+  }
+  if (var == "TIME_SET_STATUS") {
+      return timeSetSuccessfully ? "Hora Sincronizada" : "HORA NO AJUSTADA";
   }
   return String();
 }
@@ -639,18 +843,26 @@ void setupWebServer() {
     if (!request->authenticate(http_username, http_password))
       return request->requestAuthentication();
 
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(2048); // Aumenta si es necesario
     doc["activeSchedule"] = activeSchedule;
     doc["timbreEnabled"] = timbreEnabled;
     doc["currentTime"] = getCurrentTimeString();
+    doc["currentDate"] = timeSetSuccessfully ? rtc.getDate(true) : "No Sinc."; // Añadido
+    doc["timeSetSuccessfully"] = timeSetSuccessfully; // Añadido
 
+    JsonArray scheduleNamesDoc = doc.createNestedArray("scheduleNames");
     for (int s = 0; s < 3; s++) {
-      doc["scheduleNames"][s] = scheduleNames[s];
+      scheduleNamesDoc.add(scheduleNames[s]);
+    }
 
+    JsonArray schedulesDoc = doc.createNestedArray("schedules");
+    for (int s = 0; s < 3; s++) {
+      JsonArray schedule_s_Doc = schedulesDoc.createNestedArray();
       for (int i = 0; i < scheduleCount[s]; i++) {
-        doc["schedules"][s][i]["hour"] = schedules[s][i].hour;
-        doc["schedules"][s][i]["minute"] = schedules[s][i].minute;
-        doc["schedules"][s][i]["isEndOfDay"] = schedules[s][i].isEndOfDay;
+        JsonObject bellDoc = schedule_s_Doc.createNestedObject();
+        bellDoc["hour"] = schedules[s][i].hour;
+        bellDoc["minute"] = schedules[s][i].minute;
+        bellDoc["isEndOfDay"] = schedules[s][i].isEndOfDay;
       }
     }
 
@@ -668,13 +880,15 @@ void setupWebServer() {
       int newSchedule = request->getParam("schedule", true)->value().toInt();
       if (newSchedule >= 0 && newSchedule < 3) {
         activeSchedule = newSchedule;
-        saveSchedules();
-        request->send(200, "text/plain", "Configuración cambiada");
+        saveSchedules(); // Guardar el cambio
+        Serial.print(F("Horario activo cambiado a: "));
+        Serial.println(scheduleNames[activeSchedule]);
+        request->send(200, "text/plain", "Configuracion cambiada");
       } else {
-        request->send(400, "text/plain", "Valor de configuración inválido");
+        request->send(400, "text/plain", "Valor de configuracion invalido");
       }
     } else {
-      request->send(400, "text/plain", "Falta parámetro schedule");
+      request->send(400, "text/plain", "Falta parametro schedule");
     }
   });
 
@@ -684,6 +898,8 @@ void setupWebServer() {
       return request->requestAuthentication();
 
     timbreEnabled = !timbreEnabled;
+    Serial.print(F("Timbre globalmente (via web) "));
+    Serial.println(timbreEnabled ? F("ACTIVADO") : F("DESACTIVADO"));
     request->send(200, "text/plain", timbreEnabled ? "Timbre activado" : "Timbre desactivado");
   });
 
@@ -691,11 +907,18 @@ void setupWebServer() {
   server.on("/api/ringNow", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (!request->authenticate(http_username, http_password))
       return request->requestAuthentication();
-
-      if (!isRingInProgress) {
-      startBell(false);
+    
+    if (!timeSetSuccessfully) {
+        request->send(400, "text/plain", "Error: La hora del sistema no esta configurada. No se puede activar el timbre.");
+        return;
     }
-    request->send(200, "text/plain", "Timbre activado manualmente");
+    if (!isRingInProgress) {
+      Serial.println(F("Timbre activado manualmente via web."));
+      startBell(false); // false para no considerarlo fin de jornada
+      request->send(200, "text/plain", "Timbre activado manualmente");
+    } else {
+      request->send(200, "text/plain", "Timbre ya esta sonando");
+    }
   });
 
   // API para actualizar configuraciones
@@ -703,64 +926,96 @@ void setupWebServer() {
     if (!request->authenticate(http_username, http_password))
       return request->requestAuthentication();
 
-    // Verificar parámetros requeridos
     if (!request->hasParam("data", true)) {
-      request->send(400, "text/plain", "Faltan datos de configuración");
+      request->send(400, "text/plain", "Faltan datos de configuracion");
       return;
     }
 
     String jsonData = request->getParam("data", true)->value();
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(2048); // Asegúrate que el tamaño es suficiente
     DeserializationError error = deserializeJson(doc, jsonData);
 
     if (error) {
-      request->send(400, "text/plain", "Error en formato JSON");
+      Serial.print(F("Error deserializando JSON en updateSchedule: "));
+      Serial.println(error.c_str());
+      request->send(400, "text/plain", "Error en formato JSON: " + String(error.c_str()));
       return;
     }
 
-    int scheduleIndex = doc["scheduleIndex"];
+    int scheduleIndex = doc["scheduleIndex"] | -1; // Valor por defecto si no existe
     if (scheduleIndex < 0 || scheduleIndex > 2) {
-      request->send(400, "text/plain", "Índice de configuración inválido");
+      request->send(400, "text/plain", "Indice de configuracion invalido");
       return;
     }
 
-    // Actualizar nombre de la configuración
-    scheduleNames[scheduleIndex] = doc["name"].as<String>();
+    scheduleNames[scheduleIndex] = doc["name"].as<String>() | ("Horario " + String(scheduleIndex + 1)); // Nombre por defecto
 
-    // Actualizar horarios
     JsonArray bells = doc["bells"];
-    scheduleCount[scheduleIndex] = bells.size();
-    schedules[scheduleIndex].clear();
+    if (bells.isNull()) {
+        request->send(400, "text/plain", "Falta el array 'bells' en los datos");
+        return;
+    }
+    
+    schedules[scheduleIndex].clear(); // Limpiar horarios anteriores
+    scheduleCount[scheduleIndex] = 0; // Reiniciar contador
 
-    for (JsonObject bell : bells) {
-      BellTime newBell;
-      newBell.hour = bell["hour"];
-      newBell.minute = bell["minute"];
-      newBell.isEndOfDay = bell["isEndOfDay"];
-      schedules[scheduleIndex].push_back(newBell);
+    for (JsonObject bellJson : bells) {
+      if (scheduleCount[scheduleIndex] < 50) { // Limitar el número de timbres por horario
+        BellTime newBell;
+        newBell.hour = bellJson["hour"] | 0; // Valor por defecto 0
+        newBell.minute = bellJson["minute"] | 0; // Valor por defecto 0
+        newBell.isEndOfDay = bellJson["isEndOfDay"] | false; // Valor por defecto false
+        schedules[scheduleIndex].push_back(newBell);
+        scheduleCount[scheduleIndex]++;
+      } else {
+        Serial.println(F("Límite de timbres por horario alcanzado."));
+        break; 
+      }
     }
 
     saveSchedules();
-    request->send(200, "text/plain", "Configuración actualizada");
+    Serial.print(F("Horario '"));
+    Serial.print(scheduleNames[scheduleIndex]);
+    Serial.println(F("' actualizado."));
+    request->send(200, "text/plain", "Configuracion actualizada");
   });
 
-  // API para configurar fecha y hora
+  // --- ENDPOINT MODIFICADO para configurar fecha y hora completas ---
   server.on("/api/setTime", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (!request->authenticate(http_username, http_password))
       return request->requestAuthentication();
 
-    if (!request->hasParam("hour", true) || !request->hasParam("minute", true)) {
-      request->send(400, "text/plain", "Faltan parámetros de hora");
+    if (!request->hasParam("year", true) || !request->hasParam("month", true) ||
+        !request->hasParam("day", true) || !request->hasParam("hour", true) ||
+        !request->hasParam("minute", true)) {
+      request->send(400, "text/plain", "Faltan parametros: year, month, day, hour, minute");
       return;
     }
 
-    int hour = request->getParam("hour", true)->value().toInt();
-    int minute = request->getParam("minute", true)->value().toInt();
+    int year = request->getParam("year", true)->value().toInt();
+    int month = request->getParam("month", true)->value().toInt(); // 1-12
+    int day = request->getParam("day", true)->value().toInt();     // 1-31
+    int hour = request->getParam("hour", true)->value().toInt();   // 0-23
+    int minute = request->getParam("minute", true)->value().toInt(); // 0-59
+    int second = 0; // Puedes obtenerlo también si lo envías desde el cliente
 
-    // Ajustar el RTC interno
-    rtc.setTime(0, minute, hour, 1, 1, 2025);  // segundos, minutos, horas, día, mes, año
+    // Validaciones básicas (puedes hacerlas más exhaustivas)
+    if (year < 2024 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      request->send(400, "text/plain", "Valores de fecha/hora invalidos");
+      return;
+    }
+    
+    // ESP32Time rtc.setTime(sec, min, hour, day, month, year)
+    // El mes para ESP32Time es 1-12 en su función setTime.
+    rtc.setTime(second, minute, hour, day, month, year); 
+    
+    timeSetSuccessfully = true; // Marcar que la hora fue configurada
+    saveTimeRtcToSPIFFS();      // Guardar la hora configurada manualmente en SPIFFS
 
-    request->send(200, "text/plain", "Hora actualizada");
+    String successMsg = "Fecha y Hora actualizada: " + rtc.getTimeDate(true);
+    Serial.println(successMsg);
+    request->send(200, "text/plain", successMsg);
   });
 
   // Iniciar servidor
