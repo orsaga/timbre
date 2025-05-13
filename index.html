@@ -4,14 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Timbre Automatico</title>
+    <title>Timbre Automático</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Timbre Automático INED Sede Central 🛎️</h1>
-            <div class="current-time" id="currentTime">Cargando...</div>
+            <div class="current-time-status">
+                <span id="currentTimeDate">Cargando hora y fecha...</span>
+                <span id="timeSyncStatus" class="time-status">(%TIME_SET_STATUS%)</span>
+            </div>
         </header>
         
         <div class="status-panel">
@@ -34,13 +37,21 @@
         </div>
         
         <div class="time-settings">
-            <h2>Ajustar Hora del Sistema</h2>
-            <div class="time-inputs">
-                <input type="number" id="hourInput" min="0" max="23" placeholder="Hora">
+            <h2>Ajustar Fecha y Hora del Sistema</h2>
+            <p>Ajustar manualmente si no hay conexión a internet o la hora es incorrecta.</p>
+            <div class="datetime-inputs">
+                <input type="number" id="dayInput" min="1" max="31" placeholder="Día (DD)" title="Día del mes (1-31)">
+                <span>/</span>
+                <input type="number" id="monthInput" min="1" max="12" placeholder="Mes (MM)" title="Mes (1-12)">
+                <span>/</span>
+                <input type="number" id="yearInput" min="2024" max="2099" placeholder="Año (AAAA)" title="Año (ej: 2024)">
+                <span class="time-separator">@</span>
+                <input type="number" id="hourInput" min="0" max="23" placeholder="Hora (HH)" title="Hora (0-23)">
                 <span>:</span>
-                <input type="number" id="minuteInput" min="0" max="59" placeholder="Minutos">
-                <button id="setTimeBtn" class="btn">Ajustar Hora</button>
+                <input type="number" id="minuteInput" min="0" max="59" placeholder="Min (MM)" title="Minutos (0-59)">
+                <button id="setTimeBtn" class="btn">Ajustar Fecha y Hora</button>
             </div>
+             <div id="setTimeMessage" class="message"></div>
         </div>
         
         <div class="tabs">
@@ -51,53 +62,55 @@
             </div>
             
             <div class="tab-content active" id="schedule1">
-                <h2>Horario 1</h2>
+                <h2><span class="tab-title-prefix">Horario 1:</span> <span id="schedule1TabName">%SCHEDULE1_NAME%</span></h2>
                 <div class="schedule-config">
                     <div class="schedule-header">
-                        <input type="text" id="schedule1Name" class="schedule-name" placeholder="Nombre del horario">
-                        <button class="btn save-btn" data-schedule="0">Guardar</button>
+                        <label for="schedule1Name">Nombre del Horario:</label>
+                        <input type="text" id="schedule1Name" class="schedule-name" placeholder="Nombre del horario 1">
+                        <button class="btn save-btn" data-schedule-index="0">Guardar Horario 1</button>
                     </div>
-                    <div class="bells-container" id="bells1">
+                    <div class="bells-container" id="bellsContainer0">
                         <!-- Aquí se cargarán dinámicamente los horarios -->
                     </div>
-                    <button class="btn add-bell-btn" data-schedule="0">+ Añadir Clase</button>
+                    <button class="btn add-bell-btn" data-schedule-index="0">+ Añadir Clase</button>
                 </div>
             </div>
             
             <div class="tab-content" id="schedule2">
-                <h2>Horario 2</h2>
+                <h2><span class="tab-title-prefix">Horario 2:</span> <span id="schedule2TabName">%SCHEDULE2_NAME%</span></h2>
                 <div class="schedule-config">
                     <div class="schedule-header">
-                        <input type="text" id="schedule2Name" class="schedule-name" placeholder="Nombre del horario">
-                        <button class="btn save-btn" data-schedule="1">Guardar</button>
+                        <label for="schedule2Name">Nombre del Horario:</label>
+                        <input type="text" id="schedule2Name" class="schedule-name" placeholder="Nombre del horario 2">
+                        <button class="btn save-btn" data-schedule-index="1">Guardar Horario 2</button>
                     </div>
-                    <div class="bells-container" id="bells2">
+                    <div class="bells-container" id="bellsContainer1">
                         <!-- Aquí se cargarán dinámicamente los horarios -->
                     </div>
-                    <button class="btn add-bell-btn" data-schedule="1">+ Añadir Clase</button>
+                    <button class="btn add-bell-btn" data-schedule-index="1">+ Añadir Clase</button>
                 </div>
             </div>
             
             <div class="tab-content" id="schedule3">
-                <h2>Horario 3</h2>
+                <h2><span class="tab-title-prefix">Horario 3:</span> <span id="schedule3TabName">%SCHEDULE3_NAME%</span></h2>
                 <div class="schedule-config">
                     <div class="schedule-header">
-                        <input type="text" id="schedule3Name" class="schedule-name" placeholder="Nombre del horario">
-                        <button class="btn save-btn" data-schedule="2">Guardar</button>
+                        <label for="schedule3Name">Nombre del Horario:</label>
+                        <input type="text" id="schedule3Name" class="schedule-name" placeholder="Nombre del horario 3">
+                        <button class="btn save-btn" data-schedule-index="2">Guardar Horario 3</button>
                     </div>
-                    <div class="bells-container" id="bells3">
+                    <div class="bells-container" id="bellsContainer2">
                         <!-- Aquí se cargarán dinámicamente los horarios -->
                     </div>
-                    <button class="btn add-bell-btn" data-schedule="2">+ Añadir Clase</button>
+                    <button class="btn add-bell-btn" data-schedule-index="2">+ Añadir Clase</button>
                 </div>
             </div>
         </div>
     </div>
     <footer class="footer">
-        <p>Designed by Daniel Sanchez &copy; 2025</p>
+        <p>Designed by Daniel Sanchez © 2025</p>
     </footer>
     
     <script src="script.js"></script>
 </body>
-
 </html>
