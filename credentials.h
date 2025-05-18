@@ -1,6 +1,0 @@
-#define SSID "FAMILIA SANCHEZ "
-#define PASSWORD "voluntad"
-//#define SSID "SALA DE PROFESORES"
-//#define PASSWORD "Ined1948"
-#define HTTP_USERNAME "admin"
-#define HTTP_PASSWORD "admin"
