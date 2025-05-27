@@ -1,0 +1,413 @@
+/* style.css */
+:root {
+    --primary-color: #3498db;
+    --secondary-color: #2980b9;
+    --accent-color: #e74c3c;
+    --light-color: #ecf0f1;
+    --dark-color: #34495e;
+    --success-color: #2ecc71;
+    --warning-color: #f39c12;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body {
+    background-color: #f5f5f5;
+    color: var(--dark-color);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Estilos para el contenedor principal del header */
+header {
+    display: flex; /* Para alinear el grupo título/fecha a la izquierda y la hora a la derecha */
+    justify-content: space-between;
+    align-items: flex-start; /* Alinea los items al inicio verticalmente */
+    padding-bottom: 10px; /* Espacio antes del primer panel blanco */
+    /* border-bottom: 1px solid #eee; /* Opcional: una línea divisoria */
+    margin-bottom: 20px; /* Espacio antes del panel de estado del timbre */
+}
+
+/* Estilos para el grupo de título y fecha */
+.header-title-group {
+    /* No se necesita flex aquí si quieres que h1 y p se apilen (comportamiento block por defecto) */
+}
+
+.header-title-group h1 {
+    font-size: 1.9em; /* Ajusta según prefieras, un poco más grande */
+    color: #0056b3; /* Un azul un poco más oscuro o el que tenías */
+    margin-top: 0;
+    margin-bottom: 5px; /* Espacio entre el título y la fecha */
+}
+
+/* NUEVOS ESTILOS PARA LA FECHA RESALTADA */
+.date-highlight {
+    font-size: 1.05em;         /* Ligeramente más grande o a tu gusto */
+    color: #e83e8c;           /* Un color que resalte, ej: magenta/rosa (puedes cambiarlo) */
+    /* Otras opciones de color: #d9534f (rojo suave), #5cb85c (verde), #f0ad4e (naranja) */
+    font-weight: 500;         /* Semi-bold o 'bold' si prefieres más énfasis */
+    margin-top: 0;
+    margin-bottom: 10px;      /* Espacio debajo de la fecha, antes de la línea divisoria (si la hay) */
+    padding-left: 2px;        /* Pequeño padding si el título tiene algún tipo de indentación o para alinear visualmente */
+}
+
+/* Estilos para la hora actual (a la derecha) */
+.current-time {
+    font-size: 1.6em;          /* Tamaño de la hora */
+    font-weight: bold;
+    color: #343a40;            /* Color oscuro para la hora */
+    background-color: #e9ecef; /* Fondo gris claro para la hora */
+    padding: 6px 12px;
+    border-radius: 5px;
+    /* align-self: center;  /* Si quieres centrarlo verticalmente con el bloque título/fecha */
+}
+.header-main-content {
+     display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #ddd;
+}
+.header-main-content h1 {
+    margin-top: 0;
+    margin-bottom: 4px;
+    font-size: 1.7em; /* Ajusta según tu imagen */
+    color: #007bff; /* O el color de tu imagen */
+}
+/* style.css (fragmento relevante) */
+.subtitle-date {
+    font-size: 0.95em;
+    color: #555555; /* Un gris oscuro legible */
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+
+.current-time {
+    font-size: 24px;
+    font-weight: bold;
+    color: var(--dark-color);
+    background-color: var(--light-color);
+    padding: 8px 15px;
+    border-radius: 5px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.status-panel {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+    margin-bottom: 25px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.emergency-box {
+    grid-column: span 2;
+    text-align: center;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.status-label {
+    font-weight: 600;
+    color: var(--dark-color);
+}
+
+.status-value {
+    padding: 5px 10px;
+    background-color: var(--light-color);
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.select-css {
+    display: block;
+    font-size: 16px;
+    color: var(--dark-color);
+    padding: 6px 24px;
+    width: auto;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    appearance: none;
+    background-color: #fff;
+    background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23007CB2%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E');
+    background-repeat: no-repeat, repeat;
+    background-position: right .7em top 50%, 0 0;
+    background-size: .65em auto, 100%;
+}
+
+.btn {
+    display: inline-block;
+    padding: 8px 15px;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s ease;
+}
+
+.btn:hover {
+    background-color: var(--secondary-color);
+    transform: translateY(-2px);
+    box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+}
+
+.btn-emergency {
+    background-color: var(--accent-color);
+    font-size: 16px;
+    font-weight: bold;
+    padding: 12px 24px;
+    margin-top: 10px;
+    width: 100%;
+}
+
+.btn-emergency:hover {
+    background-color: #c0392b;
+}
+
+.time-settings {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+    margin-bottom: 25px;
+}
+
+.time-settings h2 {
+    margin-bottom: 15px;
+    color: var(--dark-color);
+    font-size: 20px;
+}
+
+.time-inputs {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.time-inputs input {
+    width: 95px;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 16px;
+    text-align: center;
+}
+
+.tabs {
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+    overflow: hidden;
+}
+
+.tab-buttons {
+    display: flex;
+    background-color: var(--light-color);
+}
+
+.tab-btn {
+    padding: 12px 20px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 500;
+    flex: 1;
+    transition: all 0.3s ease;
+}
+
+.tab-btn:hover {
+    background-color: rgba(52, 152, 219, 0.1);
+}
+
+.tab-btn.active {
+    background-color: white;
+    color: var(--primary-color);
+    border-top: 3px solid var(--primary-color);
+}
+
+.tab-content {
+    display: none;
+    padding: 20px;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.schedule-config {
+    margin-top: 15px;
+}
+
+.schedule-header {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.schedule-name {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 16px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.bells-container {
+    margin-bottom: 20px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.bell-item {
+    display: grid;
+    grid-template-columns: auto 80px auto auto 40px auto;
+    gap: 10px;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background-color: #f9f9f9;
+}
+.bell-name input {
+    width: 100%;
+    padding: 6px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.bell-time input {
+    width: 100%;
+    padding: 6px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.bell-options {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.delete-bell {
+    background-color: transparent;
+    color: var(--accent-color);
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.delete-bell:hover {
+    color: #c0392b;
+}
+
+.save-btn {
+    background-color: var(--success-color);
+}
+
+.save-btn:hover {
+    background-color: #27ae60;
+}
+
+.add-bell-btn {
+    margin-top: 10px;
+    width: 100%;
+    background-color: var(--light-color);
+    color: var(--dark-color);
+}
+
+.add-bell-btn:hover {
+    background-color: #dde4e6;
+    color: var(--primary-color);
+}
+
+@media (max-width: 768px) {
+    .status-panel {
+        grid-template-columns: 1fr;
+    }
+    
+    .emergency-box {
+        grid-column: span 1;
+    }
+    
+    .status-item {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    header {
+        flex-direction: column;
+        text-align: center;
+    }
+    
+    .current-time {
+        margin-top: 10px;
+    }
+    
+    .bell-item {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
+        gap: 15px;
+    }
+    
+    .bell-options {
+        grid-column: span 2;
+    }
+}
+.footer {
+    text-align: center;
+    padding: 15px 0;
+    margin-top: 30px;
+    border-top: 1px solid #ddd;
+    color: #666;
+    font-size: 14px;
+
+}
+.bell-type {
+    padding: 6px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: white;
+    font-size: 14px;
+    width: 150px;
+}
+
+.bell-type:hover {
+    border-color: var(--primary-color);
+}
