@@ -1,5 +1,6 @@
 // main.ino (versión corregida y completa)
 // Placa: ESP32 DevKitC (ESP32-WROOM-32) esp32 3.0.7
+// CAMBIO: se agrega lectura/escritura real del módulo DS3231 como respaldo de hora
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -12,6 +13,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "Wire.h"
+#include <RTClib.h>              // <-- NUEVO: librería para el DS3231
 #include "credentials.h" // Debes tener SSID, PASSWORD, HTTP_USERNAME, HTTP_PASSWORD aquí
 
 // ---------- Pines ----------
@@ -29,6 +31,10 @@ const long  gmtOffset_sec = -18000; // Colombia GMT-5
 const int   daylightOffset_sec = 0;
 ESP32Time rtc;
 
+// DS3231 (RTC físico con pila de respaldo) -- NUEVO
+RTC_DS3231 ds3231;
+bool ds3231Ok = false;
+
 // Web server
 AsyncWebServer server(80);
 
@@ -39,7 +45,7 @@ const char *http_username = HTTP_USERNAME;
 const char *http_password = HTTP_PASSWORD;
 
 // Control de canciones
-const int totalSongs = 366;
+const int totalSongs = 30;
 bool songPlayed[totalSongs + 1];
 int lastPlayedSong = 0;
 
@@ -159,8 +165,22 @@ void setup() {
   // Cargar horarios
   loadSchedules();
 
-  // OLED
+  // Bus I2C (compartido por OLED y DS3231)
   Wire.begin();
+
+  // DS3231 -- NUEVO: inicializamos el RTC físico ANTES del NTP
+  if (!ds3231.begin()) {
+    Serial.println(F("No se detectó el módulo DS3231. Sin respaldo de hora físico."));
+    ds3231Ok = false;
+  } else {
+    ds3231Ok = true;
+    Serial.println("DS3231 detectado correctamente.");
+    if (ds3231.lostPower()) {
+      Serial.println("Aviso: el DS3231 reporta pérdida de energía (pila agotada o primera vez).");
+    }
+  }
+
+  // OLED
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
     Serial.println(F("Error al inicializar SSD1306"));
     for(;;); // detenemos si no hay display (evita comportamiento indefinido)
@@ -175,7 +195,7 @@ void setup() {
   // Conectar WiFi (no bloqueante prolongado)
   setupWiFi();
 
-  // NTP / RTC
+  // NTP / RTC (con respaldo automático al DS3231 si no hay red)
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setLocalTime();
 
@@ -248,13 +268,42 @@ void setupWiFi() {
   }
 }
 
+// -----------------------------------------------------------------------------
+// setLocalTime -- REESCRITA
+// 1) Intenta NTP. Si funciona: pone la hora en el reloj interno (ESP32Time)
+//    Y además actualiza el DS3231, para que quede al día para el próximo corte.
+// 2) Si NTP falla (por ejemplo, el router también se quedó sin energía):
+//    lee la hora directamente del DS3231 en vez de quedarse sin hora válida.
+// -----------------------------------------------------------------------------
 void setLocalTime() {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Error obteniendo hora NTP");
-    return;
+
+  if (getLocalTime(&timeinfo, 5000)) {
+    rtc.setTimeStruct(timeinfo);
+    Serial.println("Hora sincronizada por NTP.");
+
+    if (ds3231Ok) {
+      ds3231.adjust(DateTime(
+        timeinfo.tm_year + 1900,
+        timeinfo.tm_mon + 1,
+        timeinfo.tm_mday,
+        timeinfo.tm_hour,
+        timeinfo.tm_min,
+        timeinfo.tm_sec
+      ));
+      Serial.println("DS3231 actualizado con la hora NTP.");
+    }
+  } else {
+    Serial.println("No se pudo obtener hora por NTP.");
+
+    if (ds3231Ok) {
+      DateTime now = ds3231.now();
+      rtc.setTime(now.second(), now.minute(), now.hour(), now.day(), now.month(), now.year());
+      Serial.println("Hora tomada del DS3231 (respaldo sin red).");
+    } else {
+      Serial.println("¡ADVERTENCIA! Sin NTP ni DS3231 disponibles: la hora no es confiable.");
+    }
   }
-  rtc.setTimeStruct(timeinfo);
 }
 
 String getCurrentTimeString() {
@@ -841,6 +890,12 @@ void setupWebServer() {
     int year = request->getParam("year", true)->value().toInt();
 
     rtc.setTime(0, minute, hour, dayOfMonth, month, year);
+
+    // NUEVO: también actualizamos el DS3231 cuando el usuario pone la hora manualmente
+    if (ds3231Ok) {
+      ds3231.adjust(DateTime(year, month, dayOfMonth, hour, minute, 0));
+    }
+
     request->send(200, "text/plain", "Hora actualizada");
   });
 
