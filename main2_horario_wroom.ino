@@ -120,13 +120,79 @@ std::vector<BellTime> schedules[3];
 int scheduleCount[3] = {0,0,0};
 String scheduleNames[3] = { "Horario 1", "Horario 2", "Horario 3" };
 
-// Festivos 2025
-const byte holiday_count = 18;
-const uint32_t holidays[holiday_count] = {
-  20250101,20250106,20250324,20250417,20250418,20250501,20250512,20250602,
-  20250613,20250630,20250720,20250807,20250818,20251013,20251103,20251117,
-  20251208,20251225
-};
+// ---- Festivos de Colombia (calculados automáticamente, Ley 51 de 1983 "Ley Emiliani") ----
+static int holidayYear = 0;      // año para el que se calcularon los festivos
+static int holidayDays[24];      // día del año (1..366) de cada festivo
+static int holidayTotal = 0;
+
+static bool esBisiesto(int y) { return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0); }
+
+// Día del año (1..366) a partir de año, mes (1..12) y día
+static int diaDelAnio(int y, int m, int d) {
+  static const int acum[] = {0,31,59,90,120,151,181,212,243,273,304,334};
+  int n = acum[m - 1] + d;
+  if (m > 2 && esBisiesto(y)) n++;
+  return n;
+}
+
+// Día de la semana: 0 = domingo ... 6 = sábado
+static int diaSemana(int y, int m, int d) {
+  static const int t[] = {0,3,2,5,0,3,5,1,4,6,2,4};
+  if (m < 3) y--;
+  return (y + y/4 - y/100 + y/400 + t[m - 1] + d) % 7;
+}
+
+// Calcula los 18 festivos nacionales del año y los guarda como día del año
+static void calcularFestivos(int y) {
+  holidayTotal = 0;
+  int jan1 = diaSemana(y, 1, 1);
+
+  // Traslada al lunes siguiente (si ya es lunes, se queda igual)
+  auto lunes = [&](int doy) {
+    int dow = (jan1 + doy - 1) % 7;
+    return doy + (8 - dow) % 7;
+  };
+  auto agregar = [&](int doy) {
+    if (holidayTotal < 24) holidayDays[holidayTotal++] = doy;
+  };
+
+  // Fijos
+  agregar(diaDelAnio(y, 1, 1));     // Año Nuevo
+  agregar(diaDelAnio(y, 5, 1));     // Día del Trabajo
+  agregar(diaDelAnio(y, 7, 20));    // Independencia
+  agregar(diaDelAnio(y, 8, 7));     // Batalla de Boyacá
+  agregar(diaDelAnio(y, 12, 8));    // Inmaculada Concepción
+  agregar(diaDelAnio(y, 12, 25));   // Navidad
+
+  // Se trasladan al lunes siguiente
+  agregar(lunes(diaDelAnio(y, 1, 6)));    // Reyes Magos
+  agregar(lunes(diaDelAnio(y, 3, 19)));   // San José
+  agregar(lunes(diaDelAnio(y, 6, 29)));   // San Pedro y San Pablo
+  agregar(lunes(diaDelAnio(y, 8, 15)));   // Asunción de la Virgen
+  agregar(lunes(diaDelAnio(y, 10, 12)));  // Día de la Raza
+  agregar(lunes(diaDelAnio(y, 11, 1)));   // Todos los Santos
+  agregar(lunes(diaDelAnio(y, 11, 11)));  // Independencia de Cartagena
+
+  // Semana Santa: fecha de Pascua (algoritmo de Meeus/Jones/Butcher)
+  int a = y % 19, b = y / 100, c = y % 100;
+  int d = b / 4, e = b % 4, f = (b + 8) / 25, g = (b - f + 1) / 3;
+  int h = (19 * a + b - d - g + 15) % 30;
+  int i = c / 4, k = c % 4;
+  int l = (32 + 2 * e + 2 * i - h - k) % 7;
+  int m = (a + 11 * h + 22 * l) / 451;
+  int mesPascua = (h + l - 7 * m + 114) / 31;
+  int diaPascua = ((h + l - 7 * m + 114) % 31) + 1;
+  int pascua = diaDelAnio(y, mesPascua, diaPascua);
+
+  agregar(pascua - 3);           // Jueves Santo
+  agregar(pascua - 2);           // Viernes Santo
+  agregar(lunes(pascua + 39));   // Ascensión del Señor
+  agregar(lunes(pascua + 60));   // Corpus Christi
+  agregar(lunes(pascua + 68));   // Sagrado Corazón
+
+  holidayYear = y;
+}
+
 
 // variable para IP mostrada en pantalla/JSON (actualizada por evento WiFi)
 String localIpStr = "AP: TimbreEscolar";
@@ -513,9 +579,11 @@ bool weekend(int day) {
 }
 
 bool holiday() {
-  uint32_t fechaNum = (rtc.getYear() * 10000 + (rtc.getMonth() + 1) * 100 + rtc.getDay());
-  for (int i = 0; i < holiday_count; i++) {
-    if (holidays[i] == fechaNum) return true;
+  int y = rtc.getYear();
+  if (y != holidayYear) calcularFestivos(y);   // se recalcula solo al cambiar de año
+  int hoy = diaDelAnio(y, rtc.getMonth() + 1, rtc.getDay());
+  for (int i = 0; i < holidayTotal; i++) {
+    if (holidayDays[i] == hoy) return true;
   }
   return false;
 }
