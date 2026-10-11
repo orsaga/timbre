@@ -13,8 +13,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "Wire.h"
+#include <Preferences.h>   // guarda la red WiFi en la memoria del ESP32
 #include <RTClib.h>              // <-- NUEVO: librería para el DS3231
-#include "credentials.h" // Debes tener SSID, PASSWORD, HTTP_USERNAME, HTTP_PASSWORD aquí
+#include "credentials.h" // Debes tener SSID1/PASSWORD1 (y opcional SSID2.., SSID3..), HTTP_USERNAME, HTTP_PASSWORD
 
 // ---------- Pines ----------
 #define RELAY_PIN           4
@@ -31,6 +32,10 @@ const long  gmtOffset_sec = -18000; // Colombia GMT-5
 const int   daylightOffset_sec = 0;
 ESP32Time rtc;
 
+// WiFi configurable desde la web
+Preferences prefs;
+unsigned long restartAt = 0;   // si es > 0, reinicia el ESP32 cuando llegue ese momento
+
 // DS3231 (RTC físico con pila de respaldo) -- NUEVO
 RTC_DS3231 ds3231;
 bool ds3231Ok = false;
@@ -39,15 +44,40 @@ bool ds3231Ok = false;
 AsyncWebServer server(80);
 
 // Credenciales (del archivo credentials.h)
-const char *ssid = SSID;
-const char *password = PASSWORD;
+// Redes conocidas (de credentials.h). Se prueban en orden; SSID2 y SSID3 son opcionales.
+const char* knownSsids[] = {
+  SSID1,
+#ifdef SSID2
+  SSID2,
+#endif
+#ifdef SSID3
+  SSID3,
+#endif
+};
+const char* knownPasswords[] = {
+  PASSWORD1,
+#ifdef SSID2
+  PASSWORD2,
+#endif
+#ifdef SSID3
+  PASSWORD3,
+#endif
+};
+const int knownNetworks = sizeof(knownSsids) / sizeof(knownSsids[0]);
 const char *http_username = HTTP_USERNAME;
 const char *http_password = HTTP_PASSWORD;
 
 // Control de canciones
-const int totalSongs = 30;
-bool songPlayed[totalSongs + 1];
+const int MAX_SONGS = 2999;      // máximo de pistas que el DFPlayer puede direccionar desde la raíz de la SD
+const int DEFAULT_SONGS = 29;    // se usa solo si no se puede leer la SD
+const int SONGS_OVERRIDE = 0;    // 0 = contar automático; si el conteo sale mal, pon aquí la cantidad real (ej. 29)
+int totalSongs = DEFAULT_SONGS;  // se actualiza leyendo la SD en setup()
+std::vector<uint16_t> songDeck;  // baraja de canciones mezcladas
+int deckPosition = 0;
 int lastPlayedSong = 0;
+uint32_t deckSeed = 0;     // semilla con la que se armó la baraja actual
+uint16_t deckAvoid = 0;    // canción que no podía quedar de primera al armarla
+uint32_t rngState = 1;     // generador propio (permite reconstruir el mismo orden)
 
 // Estados
 bool timbreEnabled = true;
@@ -118,6 +148,7 @@ void handleDFPlayerAvailableInLoop();
 void setupWiFi();
 void setLocalTime();
 String getCurrentTimeString();
+String getCurrentDateString();
 bool weekend(int day);
 bool holiday();
 void checkSchedule();
@@ -129,14 +160,91 @@ void loadSchedules();
 void saveSchedules();
 String processor(const String &var);
 void setupWebServer();
+void buildDeck(uint32_t seed, uint16_t avoid);
+void newDeck(uint16_t avoid);
+void saveDeckState();
+void loadDeckState();
+int nextSong();
+bool tryConnect(const char* s, const char* p);
+bool networkVisible(const String& name, int n);
 
 // ---------- IMPLEMENTACIÓN ----------
 
+// Generador pseudoaleatorio propio: la misma semilla produce siempre el mismo orden
+uint32_t xorshift32() {
+  rngState ^= rngState << 13;
+  rngState ^= rngState >> 17;
+  rngState ^= rngState << 5;
+  return rngState;
+}
+
+// Arma la baraja (1..totalSongs) mezclada con Fisher-Yates a partir de una semilla
+void buildDeck(uint32_t seed, uint16_t avoid) {
+  rngState = seed ? seed : 0x9E3779B9;
+  songDeck.clear();
+  for (int i = 1; i <= totalSongs; i++) songDeck.push_back(i);
+  for (int i = (int)songDeck.size() - 1; i > 0; i--) {
+    int j = xorshift32() % (i + 1);
+    std::swap(songDeck[i], songDeck[j]);
+  }
+  // Evita que la primera de la baraja sea la última que sonó
+  if (songDeck.size() > 1 && avoid != 0 && songDeck[0] == avoid) {
+    std::swap(songDeck[0], songDeck[songDeck.size() - 1]);
+  }
+  deckSeed = seed;
+  deckAvoid = avoid;
+}
+
+// Guarda en la memoria permanente lo necesario para continuar tras un corte de energía
+void saveDeckState() {
+  prefs.begin("songs", false);
+  prefs.putUInt("seed", deckSeed);
+  prefs.putUShort("avoid", deckAvoid);
+  prefs.putUShort("total", totalSongs);
+  prefs.putUShort("pos", deckPosition);
+  prefs.putUShort("last", lastPlayedSong);
+  prefs.end();
+}
+
+// Crea una baraja nueva con semilla aleatoria real y la guarda
+void newDeck(uint16_t avoid) {
+  uint32_t seed = esp_random();
+  if (seed == 0) seed = 1;
+  buildDeck(seed, avoid);
+  deckPosition = 0;
+  saveDeckState();
+  Serial.println("Baraja nueva con " + String(totalSongs) + " canciones.");
+}
+
+// Al arrancar: restaura la baraja guardada si sigue siendo válida; si no, crea una nueva
+void loadDeckState() {
+  prefs.begin("songs", false);
+  uint32_t seed = prefs.getUInt("seed", 0);
+  uint16_t total = prefs.getUShort("total", 0);
+  uint16_t pos = prefs.getUShort("pos", 0);
+  uint16_t avoid = prefs.getUShort("avoid", 0);
+  lastPlayedSong = prefs.getUShort("last", 0);
+  prefs.end();
+
+  if (seed != 0 && total == totalSongs && pos <= total) {
+    buildDeck(seed, avoid);
+    deckPosition = pos;
+    Serial.println("Baraja restaurada: va en la cancion " + String(pos) + " de " + String(total));
+  } else {
+    newDeck(lastPlayedSong);   // primera vez, o cambió la cantidad de canciones en la SD
+  }
+}
+
+// Entrega la siguiente canción sin repetir hasta agotar la baraja
+int nextSong() {
+  if (songDeck.empty() || deckPosition >= (int)songDeck.size()) newDeck(lastPlayedSong);
+  lastPlayedSong = songDeck[deckPosition++];
+  saveDeckState();   // se guarda antes de sonar: un corte de energía no repite esta canción
+  return lastPlayedSong;
+}
+
 void setup() {
   Serial.begin(115200);
-
-  // Inicializar array de canciones
-  for (int i = 1; i <= totalSongs; i++) songPlayed[i] = false;
 
   // Pines
   pinMode(RELAY_PIN, OUTPUT);
@@ -155,7 +263,31 @@ void setup() {
     myDFPlayer.setTimeOut(500);
     myDFPlayer.volume(30);
     Serial.println("DFPlayer inicializado correctamente.");
+
+    // Contar cuántas canciones hay realmente en la SD
+    delay(500);
+    int n = -1;
+    for (int intento = 1; intento <= 3 && n <= 0; intento++) {
+      n = myDFPlayer.readFileCounts();
+      Serial.println("Lectura " + String(intento) + " de archivos en SD: " + String(n));
+      if (n <= 0) delay(300);
+    }
+    if (SONGS_OVERRIDE > 0) {
+      totalSongs = SONGS_OVERRIDE;
+      Serial.println("Cantidad fijada manualmente: " + String(totalSongs));
+    } else if (n > MAX_SONGS) {
+      totalSongs = MAX_SONGS;
+      Serial.println("La SD reporta " + String(n) + " archivos; el DFPlayer solo direcciona " + String(MAX_SONGS) + ", se usaran esos.");
+    } else if (n > 0) {
+      totalSongs = n;
+      Serial.println("Canciones detectadas en la SD: " + String(totalSongs));
+    } else {
+      Serial.println("No se pudo leer la cantidad de canciones, usando " + String(DEFAULT_SONGS));
+    }
   }
+
+  // Restaurar la baraja guardada (si la hay) o crear una nueva
+  loadDeckState();
 
   // SPIFFS
   if (!SPIFFS.begin(true)) {
@@ -227,6 +359,13 @@ void loop() {
   // Actualizar pantalla
   updateDisplay();
 
+  // Reinicio diferido (después de guardar una red WiFi nueva)
+  if (restartAt != 0 && millis() >= restartAt) {
+    Serial.println("Reiniciando para aplicar la nueva red WiFi...");
+    delay(100);
+    ESP.restart();
+  }
+
   // pequeño respiro
   delay(10);
 }
@@ -248,14 +387,38 @@ void setupWiFi() {
     }
 });
 
-  WiFi.begin(ssid, password);
+  // Red guardada desde la interfaz web (si existe)
+  prefs.begin("wifi", false);
+  String savedSsid = prefs.getString("ssid", "");
+  String savedPass = prefs.getString("pass", "");
+  prefs.end();
 
-  // Esperar un tiempo prudente sin bloquear indefinidamente
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
-    delay(200);
-    Serial.print(".");
+  WiFi.mode(WIFI_STA);
+
+  // Buscar redes cercanas para no esperar por redes que no están a la vista
+  Serial.println("Buscando redes cercanas...");
+  int visibles = WiFi.scanNetworks();   // bloqueante, unos 2-3 s; negativo = falló la búsqueda
+
+  // 1) Red guardada desde la interfaz web
+  if (savedSsid.length() > 0) {
+    if (visibles < 0 || networkVisible(savedSsid, visibles)) {
+      Serial.println("Probando red guardada: " + savedSsid);
+      tryConnect(savedSsid.c_str(), savedPass.c_str());
+    } else {
+      Serial.println("Red guardada no esta a la vista: " + savedSsid);
+    }
   }
+
+  // 2) Redes de credentials.h, en orden
+  for (int i = 0; i < knownNetworks && WiFi.status() != WL_CONNECTED; i++) {
+    if (visibles < 0 || networkVisible(String(knownSsids[i]), visibles)) {
+      Serial.println("\nProbando red " + String(i + 1) + " de credentials.h: " + String(knownSsids[i]));
+      tryConnect(knownSsids[i], knownPasswords[i]);
+    } else {
+      Serial.println("Red " + String(i + 1) + " no esta a la vista: " + String(knownSsids[i]));
+    }
+  }
+  WiFi.scanDelete();   // libera los resultados de la búsqueda
 
   if (WiFi.status() == WL_CONNECTED) {
     localIpStr = WiFi.localIP().toString();
@@ -263,9 +426,30 @@ void setupWiFi() {
     Serial.println(localIpStr);
   } else {
     Serial.println("\nNo se pudo conectar a WiFi, activando AP.");
+    WiFi.mode(WIFI_AP_STA);   // AP + estación, para poder buscar redes desde la web
     WiFi.softAP("TimbreEscolar", "password");
     localIpStr = "AP: TimbreEscolar";
   }
+}
+
+// Indica si un nombre de red aparece entre las n redes encontradas en la búsqueda
+bool networkVisible(const String& name, int n) {
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == name) return true;
+  }
+  return false;
+}
+
+// Intenta conectarse a una red durante 8 segundos
+bool tryConnect(const char* s, const char* p) {
+  WiFi.disconnect();
+  WiFi.begin(s, p);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+    delay(200);
+    Serial.print(".");
+  }
+  return WiFi.status() == WL_CONNECTED;
 }
 
 // -----------------------------------------------------------------------------
@@ -304,6 +488,17 @@ void setLocalTime() {
       Serial.println("¡ADVERTENCIA! Sin NTP ni DS3231 disponibles: la hora no es confiable.");
     }
   }
+}
+
+// Fecha en español para mostrar en la interfaz, ej: "jueves, 8 de octubre de 2026"
+String getCurrentDateString() {
+  const char* dias[]  = {"domingo","lunes","martes","miércoles","jueves","viernes","sábado"};
+  const char* meses[] = {"enero","febrero","marzo","abril","mayo","junio","julio",
+                         "agosto","septiembre","octubre","noviembre","diciembre"};
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%s, %d de %s de %d",
+           dias[rtc.getDayofWeek()], rtc.getDay(), meses[rtc.getMonth()], rtc.getYear());
+  return String(buf);
 }
 
 String getCurrentTimeString() {
@@ -353,12 +548,16 @@ void updateDisplay() {
     display.display();
   } else {
     display.setTextSize(1);
+    display.setTextWrap(false);   // el texto largo se recorta en vez de saltar a otra línea
     display.setCursor(0,0);
     display.println(localIpStr);
-    display.setCursor(0,11);
+    display.setCursor(0,8);
+    display.print(getCurrentTimeString());
+    display.println(ds3231Ok ? " RTC:OK" : " RTC:NO");   // RTC:NO = no se detectó el DS3231
+    display.setCursor(0,16);
     display.print("Config: ");
     display.println(scheduleNames[activeSchedule]);
-    display.setCursor(0,22);
+    display.setCursor(0,24);
     display.print("Estado: ");
     switch (bellCurrentState) {
       case BELL_ACTIVE: display.println("Activo"); break;
@@ -419,7 +618,6 @@ void printDetail(uint8_t type, int value){
     case DFPlayerUSBRemoved: Serial.println("USB Removed!"); break;
     case DFPlayerPlayFinished:
       Serial.print(F("Number:")); Serial.print(value); Serial.println(F(" Play Finished!"));
-      if (value >= 1 && value <= totalSongs) songPlayed[value] = false;
       break;
     case DFPlayerError:
       Serial.print(F("DFPlayerError:"));
@@ -444,26 +642,8 @@ void printDetail(uint8_t type, int value){
 void startBell(bool endOfDay) {
   if (isRingInProgress) return;
 
-  int randomSong;
-  int attempts = 0;
-  bool foundUnplayed = false;
-
-  while (attempts < 10 && !foundUnplayed) {
-    randomSong = random(1, totalSongs + 1);
-    if (!songPlayed[randomSong]) {
-      foundUnplayed = true;
-      songPlayed[randomSong] = true;
-      lastPlayedSong = randomSong;
-    }
-    attempts++;
-  }
-
-  if (!foundUnplayed) {
-    randomSong = random(1, totalSongs + 1);
-    Serial.println("¡Timbre activado! (Reproducción forzada - posible repetición)");
-  } else {
-    Serial.println("¡Timbre activado! (Canción " + String(randomSong) + ")");
-  }
+  int randomSong = nextSong();
+  Serial.println("¡Timbre activado! (Canción " + String(randomSong) + " de " + String(totalSongs) + ")");
 
   digitalWrite(RELAY_PIN, HIGH);
 
@@ -523,15 +703,6 @@ void handleBellState() {
           isRingInProgress = false;
           bellState = 0;
           Serial.println("MP3 detenido, campana inactiva.");
-          // reset songs if all played
-          bool allPlayed = true;
-          for (int i = 1; i <= totalSongs; i++) {
-            if (!songPlayed[i]) { allPlayed = false; break; }
-          }
-          if (allPlayed) {
-            for (int i = 1; i <= totalSongs; i++) songPlayed[i] = false;
-            Serial.println("Todas las canciones reproducidas, reseteando lista.");
-          }
         }
       }
       break;
@@ -776,7 +947,7 @@ void setupWebServer() {
     doc["timbreEnabled"] = timbreEnabled;
     doc["bellOperationalState"] = (int)bellCurrentState;
     doc["currentTime"] = getCurrentTimeString();
-    doc["currentDate"] = getCurrentTimeString(); // si quieres otra forma, se puede adaptar
+    doc["currentDate"] = getCurrentDateString();
     doc["ip"] = localIpStr;
 
     JsonArray namesJson = doc.createNestedArray("scheduleNames");
@@ -897,6 +1068,68 @@ void setupWebServer() {
     }
 
     request->send(200, "text/plain", "Hora actualizada");
+  });
+
+  // ---- WiFi desde la interfaz ----
+  server.on("/api/wifi/current", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    DynamicJsonDocument doc(256);
+    bool conectado = (WiFi.status() == WL_CONNECTED);
+    doc["connected"] = conectado;
+    doc["ssid"] = conectado ? WiFi.SSID() : String("");
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    DynamicJsonDocument doc(2048);
+    JsonArray nets = doc.createNestedArray("networks");
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_FAILED) {
+      WiFi.scanNetworks(true);      // inicia búsqueda sin bloquear
+      doc["scanning"] = true;
+    } else if (n == WIFI_SCAN_RUNNING) {
+      doc["scanning"] = true;
+    } else {
+      for (int i = 0; i < n && i < 20; i++) {
+        String name = WiFi.SSID(i);
+        if (name.length() > 0) nets.add(name);
+      }
+      WiFi.scanDelete();
+      doc["scanning"] = false;
+    }
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/wifi/set", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    if (!request->hasParam("ssid", true)) {
+      request->send(400, "text/plain", "Falta el nombre de la red");
+      return;
+    }
+    String newSsid = request->getParam("ssid", true)->value();   // sin trim: algunas redes terminan en espacio
+    String newPass = request->hasParam("password", true) ? request->getParam("password", true)->value() : "";
+    if (newSsid.length() < 1 || newSsid.length() > 32) {
+      request->send(400, "text/plain", "Nombre de red inválido");
+      return;
+    }
+    if (newPass.length() > 0 && (newPass.length() < 8 || newPass.length() > 63)) {
+      request->send(400, "text/plain", "La clave debe tener entre 8 y 63 caracteres");
+      return;
+    }
+    prefs.begin("wifi", false);
+    prefs.putString("ssid", newSsid);
+    prefs.putString("pass", newPass);
+    prefs.end();
+    request->send(200, "text/plain", "Red guardada. El timbre se reiniciará para conectarse.");
+    restartAt = millis() + 2000;   // da tiempo a que la respuesta llegue al navegador
   });
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
