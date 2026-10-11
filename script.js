@@ -26,6 +26,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // Variables globales
     let scheduleData = null; // Se inicializará con los datos del servidor
 
+    // NUEVO: hora del timbre (ESP32). Se toma de /api/status y avanza localmente cada segundo.
+    let espClock = null;          // { baseMs: ms desde medianoche según el timbre, at: Date.now() al recibirla }
+    let connectionLost = false;   // true si la última consulta al timbre falló
+
+    // NUEVO: horarios con cambios sin guardar (para que el refresco automático no los borre)
+    const dirty = [false, false, false];
+
     // Referencias a elementos del DOM
     const currentTimeEl = document.getElementById('currentTime');
     const currentDateEl = document.getElementById('currentDate');
@@ -61,6 +68,8 @@ document.addEventListener('DOMContentLoaded', function() {
         // alert("Error al cargar la interfaz. Algunos elementos no se encontraron. Consulta la consola.");
         return;
     }
+
+    currentTimeEl.title = 'Hora del timbre';
     
     // Asignación de event listeners a los botones de tabulación
     tabButtons.forEach(button => {
@@ -77,12 +86,22 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    // NUEVO: marcar un horario como "con cambios sin guardar" cuando el usuario edita algo
+    bellsContainers.forEach((container, i) => {
+        if (!container) return;
+        ['input', 'change'].forEach(evt => container.addEventListener(evt, () => { dirty[i] = true; }));
+    });
+    scheduleNameInputs.forEach((input, i) => {
+        if (!input) return;
+        input.addEventListener('input', () => { dirty[i] = true; });
+    });
     
     // Carga inicial de datos y actualización contínua
     fetchData(); 
     updateClientTime(); 
-    setInterval(updateClientTime, 1000); // Actualiza la hora del cliente cada segundo
-    setInterval(fetchData, 30000); // Actualiza datos de la ESP32 cada 30 segundos
+    setInterval(updateClientTime, 1000); // Hace avanzar el reloj cada segundo
+    setInterval(fetchData, 30000); // Actualiza datos de la ESP32 cada 30 segundos (y resincroniza la hora)
     
     // Event listeners para botones de control
     toggleTimbreBtn.addEventListener('click', toggleTimbre);
@@ -121,6 +140,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 console.log("Datos JSON parseados:", data);
                 // Validar la estructura mínima esperada
                 if (data && typeof data === 'object' && Array.isArray(data.schedules) && Array.isArray(data.scheduleNames) && data.bellOperationalState !== undefined) {
+                    // NUEVO: si hay cambios sin guardar, conservar lo que el usuario está editando
+                    for (let i = 0; i < 3; i++) {
+                        if (dirty[i] && scheduleData && scheduleData.schedules) {
+                            syncScheduleFromDOM(i);
+                            data.schedules[i] = scheduleData.schedules[i];
+                        }
+                    }
                     scheduleData = data; // Guarda los datos recibidos
                     updateUI(scheduleData);
                     console.log("fetchData completado, UI actualizada.");
@@ -133,6 +159,8 @@ document.addEventListener('DOMContentLoaded', function() {
             })
             .catch(error => {
                 console.error('Error en fetchData:', error);
+                connectionLost = true;
+                espClock = null;
                 // Muestra un mensaje de error en la UI si hay problemas de conexión
                 if (currentTimeEl) {
                     currentTimeEl.textContent = "Error Conexión";
@@ -154,6 +182,11 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function updateUI(data) {
         console.log("Actualizando UI con datos:", data);
+
+        connectionLost = false;
+
+        // NUEVO: sincronizar el reloj del encabezado con la hora del timbre
+        setEspClock(data.currentTime);
 
         // Habilitar botones si la conexión es exitosa
         toggleTimbreBtn.disabled = false;
@@ -214,7 +247,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Actualizar nombres de horarios y opciones del selector
         for (let i = 0; i < 3; i++) {
-            if (scheduleNameInputs[i] && data.scheduleNames && data.scheduleNames[i] !== undefined) {
+            // NUEVO: no pisar el nombre si el usuario lo está editando
+            if (scheduleNameInputs[i] && !dirty[i] && data.scheduleNames && data.scheduleNames[i] !== undefined) {
                 scheduleNameInputs[i].value = data.scheduleNames[i];
             }
             if (activeScheduleSelect && activeScheduleSelect.options[i] && data.scheduleNames && data.scheduleNames[i] !== undefined) {
@@ -224,25 +258,73 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Renderizar campanas para cada horario
         for (let i = 0; i < 3; i++) {
+            if (dirty[i]) continue; // NUEVO: no redibujar un horario con cambios sin guardar
             if (bellsContainers[i]) {
                 // Asegurarse de que data.schedules[i] exista y sea un array
                 renderBells(i, (data.schedules && Array.isArray(data.schedules[i])) ? data.schedules[i] : []);
             }
         }
     }
+
+    // --- Reloj del encabezado (hora del timbre) ---
+
+    // Guarda la hora del timbre ("HH:MM:SS") para que el reloj avance a partir de ella
+    function setEspClock(timeStr) {
+        const m = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(timeStr || '');
+        if (!m) return;
+        espClock = {
+            baseMs: ((+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])) * 1000,
+            at: Date.now()
+        };
+    }
     
-    // Actualiza la hora local del usuario (no la del ESP32)
+    // Muestra la hora del timbre; si aún no la tiene, usa la hora del dispositivo
     function updateClientTime() {
-        const now = new Date();
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        const seconds = String(now.getSeconds()).padStart(2, '0');
-        if (currentTimeEl) { 
-            currentTimeEl.textContent = `${hours}:${minutes}:${seconds}`;
+        if (!currentTimeEl) return;
+        if (connectionLost) return; // se deja el aviso "Error Conexión"
+
+        let h, mi, s;
+        if (espClock) {
+            const ms = (espClock.baseMs + (Date.now() - espClock.at)) % 86400000;
+            const total = Math.floor(ms / 1000);
+            h = Math.floor(total / 3600);
+            mi = Math.floor((total % 3600) / 60);
+            s = total % 60;
+        } else {
+            const now = new Date();
+            h = now.getHours();
+            mi = now.getMinutes();
+            s = now.getSeconds();
         }
+        currentTimeEl.textContent =
+            `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
     // --- Funciones de Gestión de Horarios y Campanas ---
+
+    // NUEVO: copia a scheduleData lo que hay escrito en pantalla para un horario,
+    // así añadir/eliminar un timbre no borra lo que el usuario ya había editado
+    function syncScheduleFromDOM(scheduleIndex) {
+        const container = bellsContainers[scheduleIndex];
+        if (!container || !scheduleData || !scheduleData.schedules) return;
+        const list = [];
+        container.querySelectorAll('.bell-item').forEach(item => {
+            const nameInput = item.querySelector('.bell-name-input');
+            const hourEl = item.querySelector('.bell-hour');
+            const minuteEl = item.querySelector('.bell-minute');
+            const typeSelect = item.querySelector('.bell-type');
+            if (!nameInput || !hourEl || !minuteEl || !typeSelect) return;
+            const hour = parseInt(hourEl.value);
+            const minute = parseInt(minuteEl.value);
+            list.push({
+                name: nameInput.value,
+                hour: isNaN(hour) ? 0 : hour,
+                minute: isNaN(minute) ? 0 : minute,
+                isEndOfDay: typeSelect.value === 'true'
+            });
+        });
+        scheduleData.schedules[scheduleIndex] = list;
+    }
 
     function renderBells(scheduleIndex, bells) {
         const container = bellsContainers[scheduleIndex];
@@ -305,17 +387,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentTime: ""
             };
         }
+        syncScheduleFromDOM(scheduleIndex); // conservar lo ya editado en pantalla
         if (!scheduleData.schedules[scheduleIndex]) {
             scheduleData.schedules[scheduleIndex] = [];
         }
         scheduleData.schedules[scheduleIndex].push({ name: "", hour: 8, minute: 0, isEndOfDay: false });
+        dirty[scheduleIndex] = true;
         renderBells(scheduleIndex, scheduleData.schedules[scheduleIndex]);
     }
     
     function deleteBell(scheduleIndex, bellIndex) {
         if (scheduleData && scheduleData.schedules && scheduleData.schedules[scheduleIndex]) {
+            syncScheduleFromDOM(scheduleIndex); // conservar lo ya editado en pantalla
             // Eliminar el elemento del arreglo de datos local
             scheduleData.schedules[scheduleIndex].splice(bellIndex, 1);
+            dirty[scheduleIndex] = true;
             // Volver a renderizar para que la UI refleje el cambio y los índices sean correctos
             renderBells(scheduleIndex, scheduleData.schedules[scheduleIndex]); 
         }
@@ -373,7 +459,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!response.ok) return response.text().then(text => { throw new Error(`Servidor: ${response.status} - ${text}`); });
             return response.text();
         })
-        .then(result => { alert('Configuración guardada.'); fetchData(); })
+        .then(result => {
+            dirty[scheduleIndex] = false; // ya está guardado: se permite refrescar desde el timbre
+            alert('Configuración guardada.');
+            fetchData();
+        })
         .catch(error => { alert(`Error al guardar: ${error.message}`); console.error("Error guardando horario:", error); });
     }
     
