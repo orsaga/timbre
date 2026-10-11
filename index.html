@@ -7,6 +7,89 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- Panel de configuración WiFi: pégalo dentro del <body> de tu index.html -->
+<section id="wifi-panel" style="max-width:420px;margin:16px 0;padding:12px;border:1px solid #ccc;border-radius:8px;font-family:sans-serif">
+  <h3 style="margin-top:0">Red WiFi</h3>
+  <p>Conectado a: <b id="wifi-actual">...</b></p>
+
+  <button type="button" id="wifi-buscar" onclick="buscarRedes()">Buscar redes</button>
+  <select id="wifi-lista" onchange="elegirRed()" style="width:100%;margin:8px 0;padding:6px">
+    <option value="">— Elige una red —</option>
+  </select>
+
+  <input id="wifi-ssid" placeholder="Nombre de la red (SSID)" style="width:100%;margin-bottom:8px;padding:6px;box-sizing:border-box">
+  <input id="wifi-pass" type="password" placeholder="Clave (8 a 63 caracteres)" style="width:100%;margin-bottom:8px;padding:6px;box-sizing:border-box">
+
+  <button type="button" onclick="guardarWifi()">Guardar y reiniciar</button>
+  <p id="wifi-msg" style="min-height:1.2em"></p>
+</section>
+
+<script>
+function wifiMsg(t) { document.getElementById('wifi-msg').textContent = t; }
+
+async function cargarWifiActual() {
+  try {
+    const r = await fetch('/api/wifi/current');
+    const d = await r.json();
+    document.getElementById('wifi-actual').textContent =
+      d.connected ? d.ssid : 'Sin conexión (modo punto de acceso)';
+  } catch (e) {
+    document.getElementById('wifi-actual').textContent = 'No se pudo consultar';
+  }
+}
+
+async function buscarRedes() {
+  wifiMsg('Buscando redes...');
+  document.getElementById('wifi-buscar').disabled = true;
+  try {
+    for (let i = 0; i < 12; i++) {
+      const r = await fetch('/api/wifi/scan');
+      const d = await r.json();
+      if (!d.scanning) {
+        const lista = document.getElementById('wifi-lista');
+        lista.innerHTML = '<option value="">— Elige una red —</option>';
+        [...new Set(d.networks)].forEach(n => {
+          const o = document.createElement('option');
+          o.value = n; o.textContent = n;
+          lista.appendChild(o);
+        });
+        wifiMsg(d.networks.length + ' redes encontradas');
+        return;
+      }
+      await new Promise(res => setTimeout(res, 1000));
+    }
+    wifiMsg('No se encontraron redes. Intenta de nuevo.');
+  } catch (e) {
+    wifiMsg('Error al buscar redes');
+  } finally {
+    document.getElementById('wifi-buscar').disabled = false;
+  }
+}
+
+function elegirRed() {
+  document.getElementById('wifi-ssid').value = document.getElementById('wifi-lista').value;
+}
+
+async function guardarWifi() {
+  const ssid = document.getElementById('wifi-ssid').value;
+  const password = document.getElementById('wifi-pass').value;
+  if (!ssid) { wifiMsg('Escribe o elige el nombre de la red'); return; }
+  if (!confirm('El timbre se reiniciará para conectarse a "' + ssid + '". ¿Continuar?')) return;
+  try {
+    const r = await fetch('/api/wifi/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ssid, password })
+    });
+    wifiMsg(await r.text());
+  } catch (e) {
+    wifiMsg('No se pudo guardar');
+  }
+}
+
+window.addEventListener('load', cargarWifiActual);
+</script>
+
     <div class="container">
         <header>
             <div class="header-title-group">
@@ -49,6 +132,23 @@
             </div>
         </div>
         
+        <div class="time-settings" id="wifiSettings">
+            <h2>Red WiFi</h2>
+            <p>Conectado a: <strong id="wifiActual">...</strong></p>
+            <div class="time-inputs">
+                <button id="wifiBuscarBtn" class="btn">Buscar redes</button>
+                <select id="wifiLista" class="select-css">
+                    <option value="">Elige una red</option>
+                </select>
+            </div>
+            <div class="time-inputs">
+                <input type="text" id="wifiSsid" placeholder="Nombre de la red (SSID)">
+                <input type="password" id="wifiPass" placeholder="Clave (8 a 63 caracteres)">
+                <button id="wifiGuardarBtn" class="btn">Guardar y reiniciar</button>
+            </div>
+            <p id="wifiMsg" class="wifi-msg"></p>
+        </div>
+
         <div class="tabs">
             <div class="tab-buttons">
                 <button class="tab-btn active" data-tab="schedule1">Horario 1</button>
@@ -104,5 +204,95 @@
     </footer>
     
     <script src="script.js"></script>
+
+    <style>
+        /* Panel WiFi: reutiliza .time-settings, .time-inputs, .select-css y .btn de style.css */
+        #wifiSettings p { margin-bottom: 10px; }
+        #wifiSettings .time-inputs { margin-bottom: 10px; }
+        #wifiSettings input[type="text"],
+        #wifiSettings input[type="password"] {
+            flex: 1 1 180px;
+            width: auto;
+            min-width: 0;
+            text-align: left;
+        }
+        .wifi-msg { min-height: 1.2em; margin: 4px 0 0; color: var(--dark-color); }
+
+        @media (max-width: 768px) {
+            #wifiSettings input[type="text"],
+            #wifiSettings input[type="password"] {
+                flex: none;
+                width: auto;   /* se estira solo por align-items: stretch de .time-inputs */
+            }
+        }
+    </style>
+
+    <script>
+    (function () {
+        const $ = id => document.getElementById(id);
+        const msg = t => { $('wifiMsg').textContent = t; };
+
+        async function cargarWifiActual() {
+            try {
+                const r = await fetch('/api/wifi/current');
+                const d = await r.json();
+                $('wifiActual').textContent = d.connected ? d.ssid : 'Sin conexion (modo punto de acceso)';
+            } catch (e) {
+                $('wifiActual').textContent = 'No se pudo consultar';
+            }
+        }
+
+        async function buscarRedes() {
+            msg('Buscando redes...');
+            $('wifiBuscarBtn').disabled = true;
+            try {
+                for (let i = 0; i < 12; i++) {
+                    const r = await fetch('/api/wifi/scan');
+                    const d = await r.json();
+                    if (!d.scanning) {
+                        const lista = $('wifiLista');
+                        lista.innerHTML = '<option value="">Elige una red</option>';
+                        [...new Set(d.networks)].forEach(n => {
+                            const o = document.createElement('option');
+                            o.value = n;
+                            o.textContent = n;
+                            lista.appendChild(o);
+                        });
+                        msg(d.networks.length + ' redes encontradas');
+                        return;
+                    }
+                    await new Promise(res => setTimeout(res, 1000));
+                }
+                msg('No se encontraron redes. Intenta de nuevo.');
+            } catch (e) {
+                msg('Error al buscar redes');
+            } finally {
+                $('wifiBuscarBtn').disabled = false;
+            }
+        }
+
+        async function guardarWifi() {
+            const ssid = $('wifiSsid').value;
+            const password = $('wifiPass').value;
+            if (!ssid) { msg('Escribe o elige el nombre de la red'); return; }
+            if (!confirm('El timbre se reiniciara para conectarse a "' + ssid + '". Continuar?')) return;
+            try {
+                const r = await fetch('/api/wifi/set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ ssid: ssid, password: password })
+                });
+                msg(await r.text());
+            } catch (e) {
+                msg('No se pudo guardar');
+            }
+        }
+
+        $('wifiBuscarBtn').addEventListener('click', buscarRedes);
+        $('wifiLista').addEventListener('change', () => { $('wifiSsid').value = $('wifiLista').value; });
+        $('wifiGuardarBtn').addEventListener('click', guardarWifi);
+        cargarWifiActual();
+    })();
+    </script>
 </body>
 </html>
