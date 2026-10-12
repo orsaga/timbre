@@ -60,6 +60,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('bells3')
     ];
     const addBellBtns = document.querySelectorAll('.add-bell-btn');
+    const mainTitleEl = document.getElementById('mainTitle');
+    const institutionInput = document.getElementById('institutionInput');
+    const saveInstitutionBtn = document.getElementById('saveInstitutionBtn');
     const saveBtns = document.querySelectorAll('.save-btn');
 
     // Validación inicial de elementos DOM
@@ -108,6 +111,7 @@ document.addEventListener('DOMContentLoaded', function() {
     ringNowBtn.addEventListener('click', ringNow);
     activeScheduleSelect.addEventListener('change', setActiveSchedule);
     setTimeBtn.addEventListener('click', setSystemTime);
+    if (saveInstitutionBtn) saveInstitutionBtn.addEventListener('click', saveInstitution);
     
     // Event listeners para botones de añadir y guardar horario
     addBellBtns.forEach(btn => {
@@ -233,6 +237,16 @@ document.addEventListener('DOMContentLoaded', function() {
         // Reestablecer color de tiempo si estaba en rojo
         if (currentTimeEl && currentTimeEl.style.color === "red") { 
             currentTimeEl.style.color = ""; 
+        }
+
+        // NUEVO: nombre de la institución (título de la página y de la pestaña)
+        if (data.institution !== undefined) {
+            const titulo = data.institution ? `Timbre Automático ${data.institution}` : 'Timbre Automático';
+            if (mainTitleEl) mainTitleEl.textContent = titulo + ' 🛎️';
+            document.title = titulo;
+            if (institutionInput && document.activeElement !== institutionInput) {
+                institutionInput.value = data.institution;   // no pisa lo que se esté escribiendo
+            }
         }
 
         // Actualizar fecha del sistema
@@ -504,6 +518,22 @@ document.addEventListener('DOMContentLoaded', function() {
         .catch(error => alert(`Error al cambiar config. activa: ${error.message}`));
     }
     
+    function saveInstitution() {
+        if (!institutionInput) return;
+        const name = institutionInput.value.trim();
+        fetch('/api/institution', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'name=' + encodeURIComponent(name)
+        })
+        .then(response => {
+            if (!response.ok) return response.text().then(text => { throw new Error(`Servidor: ${response.status} - ${text}`); });
+            return response.text();
+        })
+        .then(() => { alert('Nombre guardado.'); fetchData(); })
+        .catch(error => alert(`Error al guardar el nombre: ${error.message}`));
+    }
+
     function setSystemTime() {
         if (!hourInput || !minuteInput || !dayInput || !monthInput || !yearInput) return;
         const hour = parseInt(hourInput.value);
