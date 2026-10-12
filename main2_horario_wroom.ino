@@ -34,6 +34,7 @@ ESP32Time rtc;
 
 // WiFi configurable desde la web
 Preferences prefs;
+String institutionName = "";   // nombre del colegio o empresa, editable desde la página
 unsigned long restartAt = 0;   // si es > 0, reinicia el ESP32 cuando llegue ese momento
 
 // DS3231 (RTC físico con pila de respaldo) -- NUEVO
@@ -362,6 +363,14 @@ void setup() {
 
   // Cargar horarios
   loadSchedules();
+
+  // Nombre de la institución (se guarda desde la página)
+  {
+    Preferences cfg;
+    cfg.begin("config", false);
+    institutionName = cfg.getString("inst", "");
+    cfg.end();
+  }
 
   // Bus I2C (compartido por OLED y DS3231)
   Wire.begin();
@@ -1017,6 +1026,7 @@ void setupWebServer() {
     doc["currentTime"] = getCurrentTimeString();
     doc["currentDate"] = getCurrentDateString();
     doc["ip"] = localIpStr;
+    doc["institution"] = institutionName;
 
     JsonArray namesJson = doc.createNestedArray("scheduleNames");
     for (int s = 0; s < 3; s++) namesJson.add(scheduleNames[s]);
@@ -1136,6 +1146,24 @@ void setupWebServer() {
     }
 
     request->send(200, "text/plain", "Hora actualizada");
+  });
+
+  // ---- Nombre de la institución ----
+  server.on("/api/institution", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    String name = request->hasParam("name", true) ? request->getParam("name", true)->value() : "";
+    name.trim();
+    if (name.length() > 40) {
+      request->send(400, "text/plain", "El nombre es muy largo (máximo 40 caracteres)");
+      return;
+    }
+    institutionName = name;
+    Preferences cfg;                    // objeto local: evita choques con el loop principal
+    cfg.begin("config", false);
+    cfg.putString("inst", institutionName);
+    cfg.end();
+    request->send(200, "text/plain", "Nombre guardado");
   });
 
   // ---- WiFi desde la interfaz ----
