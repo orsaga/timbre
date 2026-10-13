@@ -35,6 +35,11 @@ ESP32Time rtc;
 // WiFi configurable desde la web
 Preferences prefs;
 String institutionName = "";   // nombre del colegio o empresa, editable desde la página
+
+// Red de respaldo (Access Point) que se crea si no hay WiFi conocido al encender
+String apBase = "TimbreEscolar";   // nombre base, editable desde la página
+String apPassword = "";            // clave propia de cada equipo, editable desde la página
+String apName = "TimbreEscolar";   // nombre completo = base + "-" + últimos 4 dígitos del equipo
 unsigned long restartAt = 0;   // si es > 0, reinicia el ESP32 cuando llegue ese momento
 
 // DS3231 (RTC físico con pila de respaldo) -- NUEVO
@@ -234,6 +239,9 @@ void loadDeckState();
 int nextSong();
 bool tryConnect(const char* s, const char* p);
 bool networkVisible(const String& name, int n);
+String deviceSuffix();
+String randomApPassword();
+void loadApConfig();
 
 // ---------- IMPLEMENTACIÓN ----------
 
@@ -372,6 +380,9 @@ void setup() {
     cfg.end();
   }
 
+  // Red de respaldo: nombre con los últimos dígitos del equipo y clave propia
+  loadApConfig();
+
   // Bus I2C (compartido por OLED y DS3231)
   Wire.begin();
 
@@ -449,6 +460,42 @@ void loop() {
 // Funciones auxiliares
 // -----------------------------------------------------------------------------
 
+// Últimos 4 dígitos (hexadecimal) de la dirección MAC del equipo, ej: "A3F9"
+String deviceSuffix() {
+  uint64_t mac = ESP.getEfuseMac();   // el primer byte de la MAC queda en el byte menos significativo
+  char buf[5];
+  snprintf(buf, sizeof(buf), "%02X%02X", (uint8_t)((mac >> 32) & 0xFF), (uint8_t)((mac >> 40) & 0xFF));
+  return String(buf);
+}
+
+// Clave aleatoria tipo "65YyD-aBzGR" (sin caracteres que se confunden: 0/O, 1/l/I)
+String randomApPassword() {
+  const char alfabeto[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const int n = sizeof(alfabeto) - 1;
+  String p = "";
+  for (int i = 0; i < 10; i++) {
+    if (i == 5) p += "-";
+    p += alfabeto[esp_random() % n];
+  }
+  return p;
+}
+
+// Carga el nombre base y la clave de la red de respaldo; si no hay clave, crea una nueva
+void loadApConfig() {
+  Preferences cfg;
+  cfg.begin("config", false);
+  apBase = cfg.getString("ap_base", "TimbreEscolar");
+  apPassword = cfg.getString("ap_pass", "");
+  if (apPassword.length() < 8) {   // primera vez en este equipo
+    apPassword = randomApPassword();
+    cfg.putString("ap_pass", apPassword);
+    Serial.println("Se genero una clave nueva para la red de respaldo de este equipo.");
+  }
+  cfg.end();
+  apName = apBase + "-" + deviceSuffix();
+  Serial.println("Red de respaldo: " + apName + "  |  clave: " + apPassword);
+}
+
 void setupWiFi() {
   Serial.println("Conectando WiFi...");
   // Registrar evento WiFi para actualizar IP sin llamar WiFi.localIP() en lugares inseguros
@@ -457,7 +504,7 @@ void setupWiFi() {
       localIpStr = WiFi.localIP().toString();
       Serial.println("✅ WiFi Conectado! IP: " + localIpStr);
     } else if (event == WIFI_EVENT_STA_DISCONNECTED) {
-      localIpStr = "AP: TimbreEscolar";
+      localIpStr = "AP:" + apName;
       Serial.println("⚠️ WiFi Desconectado.");
     }
 });
@@ -502,8 +549,8 @@ void setupWiFi() {
   } else {
     Serial.println("\nNo se pudo conectar a WiFi, activando AP.");
     WiFi.mode(WIFI_AP_STA);   // AP + estación, para poder buscar redes desde la web
-    WiFi.softAP("TimbreEscolar", "password");
-    localIpStr = "AP: TimbreEscolar";
+    WiFi.softAP(apName.c_str(), apPassword.c_str());
+    localIpStr = "AP:" + apName;
   }
 }
 
@@ -1146,6 +1193,56 @@ void setupWebServer() {
     }
 
     request->send(200, "text/plain", "Hora actualizada");
+  });
+
+  // ---- Red de respaldo (Access Point) ----
+  server.on("/api/ap", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    DynamicJsonDocument doc(512);
+    doc["base"] = apBase;
+    doc["fullName"] = apName;
+    doc["password"] = apPassword;
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
+  server.on("/api/ap", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->authenticate(http_username, http_password))
+      return request->requestAuthentication();
+    String base = request->hasParam("base", true) ? request->getParam("base", true)->value() : "";
+    String pass = request->hasParam("password", true) ? request->getParam("password", true)->value() : "";
+
+    // Nombre: 1 a 20 caracteres (letras, números, guion y guion bajo)
+    bool baseOk = base.length() >= 1 && base.length() <= 20;
+    for (size_t i = 0; i < base.length() && baseOk; i++) {
+      char c = base[i];
+      if (!(isalnum((unsigned char)c) || c == '-' || c == '_')) baseOk = false;
+    }
+    if (!baseOk) {
+      request->send(400, "text/plain", "Nombre invalido: use letras, numeros, guion o guion bajo (max. 20)");
+      return;
+    }
+
+    // Clave WPA2: 8 a 63 caracteres ASCII imprimibles
+    bool passOk = pass.length() >= 8 && pass.length() <= 63;
+    for (size_t i = 0; i < pass.length() && passOk; i++) {
+      char c = pass[i];
+      if (c < 32 || c > 126) passOk = false;
+    }
+    if (!passOk) {
+      request->send(400, "text/plain", "Clave invalida: 8 a 63 caracteres, sin tildes ni enes");
+      return;
+    }
+
+    Preferences cfg;                    // objeto local: evita choques con el loop principal
+    cfg.begin("config", false);
+    cfg.putString("ap_base", base);
+    cfg.putString("ap_pass", pass);
+    cfg.end();
+    request->send(200, "text/plain", "Guardado. El timbre se reiniciara para aplicar la nueva red de respaldo.");
+    restartAt = millis() + 2000;
   });
 
   // ---- Nombre de la institución ----
