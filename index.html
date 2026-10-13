@@ -74,6 +74,17 @@
             </div>
         </div>
 
+        <div class="time-settings" id="apSettings">
+            <h2>Red de respaldo del timbre</h2>
+            <p>Si al encenderse no encuentra WiFi, el timbre crea esta red: <strong id="apFullName">...</strong></p>
+            <div class="time-inputs">
+                <input type="text" id="apBaseInput" maxlength="20" placeholder="Nombre base (ej: TimbreEscolar)">
+                <input type="text" id="apPassInput" maxlength="63" placeholder="Clave (8 a 63 caracteres)">
+                <button id="apSaveBtn" class="btn">Guardar y reiniciar</button>
+            </div>
+            <p id="apMsg" class="wifi-msg"></p>
+        </div>
+
         <div class="tabs">
             <div class="tab-buttons">
                 <button class="tab-btn active" data-tab="schedule1">Horario 1</button>
@@ -136,7 +147,8 @@
         #wifiSettings .time-inputs { margin-bottom: 10px; }
         #wifiSettings input[type="text"],
         #wifiSettings input[type="password"],
-        #institutionSettings input[type="text"] {
+        #institutionSettings input[type="text"],
+        #apSettings input[type="text"] {
             flex: 1 1 180px;
             width: auto;
             min-width: 0;
@@ -147,7 +159,8 @@
         @media (max-width: 768px) {
             #wifiSettings input[type="text"],
             #wifiSettings input[type="password"],
-            #institutionSettings input[type="text"] {
+            #institutionSettings input[type="text"],
+            #apSettings input[type="text"] {
                 flex: none;
                 width: auto;   /* se estira solo por align-items: stretch de .time-inputs */
             }
@@ -214,6 +227,48 @@
                 msg('No se pudo guardar');
             }
         }
+
+        // ---- Red de respaldo (Access Point) ----
+        const apMsg = t => { $('apMsg').textContent = t; };
+
+        async function cargarAp() {
+            try {
+                const r = await fetch('/api/ap');
+                const d = await r.json();
+                $('apFullName').textContent = d.fullName;
+                if (document.activeElement !== $('apBaseInput')) $('apBaseInput').value = d.base;
+                if (document.activeElement !== $('apPassInput')) $('apPassInput').value = d.password;
+            } catch (e) {
+                $('apFullName').textContent = 'No se pudo consultar';
+            }
+        }
+
+        async function guardarAp() {
+            const base = $('apBaseInput').value;
+            const password = $('apPassInput').value;
+            if (!/^[A-Za-z0-9_-]{1,20}$/.test(base)) {
+                apMsg('El nombre solo puede tener letras, numeros, guion y guion bajo (maximo 20).');
+                return;
+            }
+            if (password.length < 8 || password.length > 63) {
+                apMsg('La clave debe tener entre 8 y 63 caracteres.');
+                return;
+            }
+            if (!confirm('El timbre se reiniciara y la red de respaldo usara la nueva clave. Continuar?')) return;
+            try {
+                const r = await fetch('/api/ap', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ base: base, password: password })
+                });
+                apMsg(await r.text());
+            } catch (e) {
+                apMsg('No se pudo guardar');
+            }
+        }
+
+        $('apSaveBtn').addEventListener('click', guardarAp);
+        cargarAp();
 
         $('wifiBuscarBtn').addEventListener('click', buscarRedes);
         $('wifiLista').addEventListener('change', () => { $('wifiSsid').value = $('wifiLista').value; });
