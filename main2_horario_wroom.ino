@@ -14,6 +14,7 @@
 #include <Adafruit_SSD1306.h>
 #include "Wire.h"
 #include <Preferences.h>   // guarda la red WiFi en la memoria del ESP32
+#include "esp_sntp.h"         // aviso cuando internet sincroniza la hora
 #include <RTClib.h>              // <-- NUEVO: librería para el DS3231
 #include "credentials.h" // Debes tener SSID1/PASSWORD1 (y opcional SSID2.., SSID3..), HTTP_USERNAME, HTTP_PASSWORD
 
@@ -45,6 +46,13 @@ unsigned long restartAt = 0;   // si es > 0, reinicia el ESP32 cuando llegue ese
 // DS3231 (RTC físico con pila de respaldo) -- NUEVO
 RTC_DS3231 ds3231;
 bool ds3231Ok = false;
+
+// Sincronización periódica de relojes
+volatile bool ntpSyncFlag = false;                              // la marca el aviso de internet
+unsigned long lastNtpSyncMs = 0;                                // millis() de la última sincronización por internet (0 = ninguna)
+unsigned long lastClockCheckMs = 0;
+const unsigned long CLOCK_CHECK_INTERVAL = 10UL * 60UL * 1000UL;   // revisar el DS3231 cada 10 minutos
+const unsigned long NTP_FRESH_WINDOW = 2UL * 60UL * 60UL * 1000UL; // internet "reciente" = últimas 2 horas
 
 // Web server
 AsyncWebServer server(80);
@@ -242,6 +250,8 @@ bool networkVisible(const String& name, int n);
 String deviceSuffix();
 String randomApPassword();
 void loadApConfig();
+void onNtpSync(struct timeval *tv);
+void keepClocksInSync();
 
 // ---------- IMPLEMENTACIÓN ----------
 
@@ -414,6 +424,7 @@ void setup() {
   setupWiFi();
 
   // NTP / RTC (con respaldo automático al DS3231 si no hay red)
+  sntp_set_time_sync_notification_cb(onNtpSync);   // avisa cada vez que internet sincroniza la hora
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setLocalTime();
 
@@ -441,6 +452,9 @@ void loop() {
 
   // Revisar DFPlayer (leer eventos)
   handleDFPlayerAvailableInLoop();
+
+  // Mantener alineados el reloj interno y el DS3231
+  keepClocksInSync();
 
   // Actualizar pantalla
   updateDisplay();
@@ -551,6 +565,51 @@ void setupWiFi() {
     WiFi.mode(WIFI_AP_STA);   // AP + estación, para poder buscar redes desde la web
     WiFi.softAP(apName.c_str(), apPassword.c_str());
     localIpStr = "AP:" + apName;
+  }
+}
+
+// Aviso de internet: solo levanta una bandera (se atiende en el loop, no aquí)
+void onNtpSync(struct timeval *tv) {
+  ntpSyncFlag = true;
+}
+
+// Mantiene alineados el reloj interno y el DS3231:
+//  - si internet acaba de sincronizar la hora, la copia al DS3231
+//  - si hace rato no hay internet, el DS3231 (más preciso) corrige al reloj interno
+// No toca los relojes durante un timbre ni cerca del cambio de minuto.
+void keepClocksInSync() {
+  int sec = rtc.getSecond();
+  if (isRingInProgress || sec < 5 || sec > 55) return;
+
+  // 1) Internet sincronizó el reloj interno -> actualizar el DS3231
+  if (ntpSyncFlag) {
+    ntpSyncFlag = false;
+    lastNtpSyncMs = millis();
+    if (lastNtpSyncMs == 0) lastNtpSyncMs = 1;
+    if (ds3231Ok) {
+      ds3231.adjust(DateTime(rtc.getYear(), rtc.getMonth() + 1, rtc.getDay(),
+                             rtc.getHour(true), rtc.getMinute(), rtc.getSecond()));
+      Serial.println("DS3231 actualizado con la hora de internet.");
+    }
+    return;
+  }
+
+  // 2) Sin internet reciente -> el DS3231 corrige al reloj interno
+  if (!ds3231Ok) return;
+  if (millis() - lastClockCheckMs < CLOCK_CHECK_INTERVAL) return;
+  lastClockCheckMs = millis();
+  if (lastNtpSyncMs != 0 && millis() - lastNtpSyncMs < NTP_FRESH_WINDOW) return;
+
+  if (ds3231.lostPower()) return;                    // el DS3231 no tiene una hora confiable
+  DateTime ref = ds3231.now();
+  if (ref.year() < 2024 || ref.year() > 2099) return;
+
+  DateTime mine(rtc.getYear(), rtc.getMonth() + 1, rtc.getDay(),
+                rtc.getHour(true), rtc.getMinute(), rtc.getSecond());
+  long diff = (long)ref.unixtime() - (long)mine.unixtime();
+  if (diff >= 2 || diff <= -2) {                     // se ignora un desvío menor a 2 segundos
+    rtc.setTime(ref.second(), ref.minute(), ref.hour(), ref.day(), ref.month(), ref.year());
+    Serial.println("Reloj interno ajustado con el DS3231 (desvio de " + String(diff) + " s).");
   }
 }
 
